@@ -1,0 +1,632 @@
+install.packages(c("afex", "car", "dplyr", "ggplot2", "ggfortify", "tibble", "knitr", "tidyr", "MASS", "circular", "CircStats", "rcompanion"))
+library(car)
+library(afex)
+library(dplyr)
+library(ggplot2)
+library(ggfortify)
+library(tibble)
+library(knitr)
+library(tidyr)
+library(MASS)
+library(circular)
+library(CircStats)
+library(rcompanion)
+
+
+# Install and load necessary package
+if (!require(DescTools)) install.packages("DescTools")
+library(DescTools)
+
+getwd()
+setwd("C:/Users/RebeccaPedler/OneDrive - Yumbah/Documents/R&D/Industry PhD/Trials/Container Trial/R_datasets")
+
+lip_data <- read.csv("lip_colour_data_all.csv", header = TRUE)
+str(lip_data)
+
+lip_data <- lip_data %>%
+  mutate(
+    diet       = factor(diet),
+    water_temp = factor(water_temp),
+    treatment  = factor(treatment)
+  )
+
+summary_stats <- lip_data %>%
+  group_by(treatment, measurement) %>%
+  summarise(
+    n = n(),
+    mean = mean(result, na.rm = TRUE),
+    se = sd(result, na.rm = TRUE) / sqrt(n),
+    .groups = "drop"
+  )
+print(summary_stats)
+
+summary_stats_18 <- lip_data %>%
+  filter(water_temp == "18") %>%  
+  group_by(treatment, measurement) %>%
+  summarise(
+    n = n(),
+    mean = mean(result, na.rm = TRUE),
+    se = sd(result, na.rm = TRUE) / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    mean_se = paste0(round(mean, 2), " \u00B1 ", round(se, 2))
+  )
+print(summary_stats_18, n = 42)
+
+summary_stats_20 <- lip_data %>%
+  filter(water_temp == "20") %>% 
+  group_by(treatment, measurement) %>%
+  summarise(
+    n = n(),
+    mean = mean(result, na.rm = TRUE),
+    se = sd(result, na.rm = TRUE) / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    mean_se = paste0(round(mean, 2), " \u00B1 ", round(se, 2))
+  )
+print(summary_stats_20, n = 42)
+
+summary_stats_25 <- lip_data %>%
+  filter(water_temp == "25") %>% 
+  group_by(treatment, measurement) %>%
+  summarise(
+    n = n(),
+    mean = mean(result, na.rm = TRUE),
+    se = sd(result, na.rm = TRUE) / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    mean_se = paste0(round(mean, 2), " \u00B1 ", round(se, 2))
+  )
+print(summary_stats_25, n = 42)
+
+# Wakame ONE WAY ANOVA
+wakame_18 <- lip_data %>%
+  filter(diet %in% c("YLB", "WK2.5", "WK5", "WK10"), 
+  water_temp %in% c("18"))
+str(wakame_18)
+
+# HUE
+wakame_H <- wakame_18 %>%
+  filter(measurement == "H") %>%
+  mutate(inclusion = factor(diet))
+
+wakame_anova_model_H <- aov(result ~ inclusion, data = wakame_H)
+summary(wakame_anova_model_H)
+
+# Assumptions
+residuals_anova_WK_H <- residuals(wakame_anova_model_H)
+shapiro.test(residuals_anova_WK_H)  # Normality
+qqnorm(residuals_anova_WK_H); qqline(residuals_anova_WK_H)  # Q-Q plot
+leveneTest(result ~ inclusion, data = wakame_H)  # Homogeneity of variance
+
+# SATURATION
+wakame_S <- wakame_18 %>%
+  filter(measurement == "S") %>%
+  mutate(inclusion = factor(diet))
+
+wakame_anova_model_S <- aov(result ~ inclusion, data = wakame_S)
+summary(wakame_anova_model_S)
+
+residuals_anova_WK_S <- residuals(wakame_anova_model_S)
+shapiro.test(residuals_anova_WK_S)
+qqnorm(residuals_anova_WK_S); qqline(residuals_anova_WK_S)
+leveneTest(result ~ inclusion, data = wakame_S)
+
+# BRIGHTNESS
+wakame_B <- wakame_18 %>%
+  filter(measurement == "B") %>%
+  mutate(inclusion = factor(diet))
+
+wakame_anova_model_B <- aov(result ~ inclusion, data = wakame_B)
+summary(wakame_anova_model_B)
+
+residuals_anova_WK_B <- residuals(wakame_anova_model_B)
+shapiro.test(residuals_anova_WK_B)
+qqnorm(residuals_anova_WK_B); qqline(residuals_anova_WK_B)
+leveneTest(result ~ inclusion, data = wakame_B)
+
+TukeyHSD(wakame_anova_model_B, "inclusion")
+
+# L
+wakame_L <- wakame_18 %>%
+  filter(measurement == "L") %>%
+  mutate(inclusion = factor(diet))
+
+wakame_anova_model_L <- aov(result ~ inclusion, data = wakame_L)
+summary(wakame_anova_model_L)
+
+residuals_anova_WK_L <- residuals(wakame_anova_model_L)
+shapiro.test(residuals_anova_WK_L)
+qqnorm(residuals_anova_WK_L); qqline(residuals_anova_WK_L)
+leveneTest(result ~ inclusion, data = wakame_L)
+
+# a
+wakame_a <- wakame_18 %>%
+  filter(measurement == "a") %>%
+  mutate(inclusion = factor(diet))
+
+wakame_anova_model_a <- aov(result ~ inclusion, data = wakame_a)
+summary(wakame_anova_model_a)
+
+residuals_anova_WK_a <- residuals(wakame_anova_model_a)
+shapiro.test(residuals_anova_WK_a)
+qqnorm(residuals_anova_WK_a); qqline(residuals_anova_WK_a)
+leveneTest(result ~ inclusion, data = wakame_a)
+
+# b
+wakame_b <- wakame_18 %>%
+  filter(measurement == "b") %>%
+  mutate(inclusion = factor(diet))
+
+wakame_anova_model_b <- aov(result ~ inclusion, data = wakame_b)
+summary(wakame_anova_model_b)
+
+residuals_anova_WK_b <- residuals(wakame_anova_model_b)
+shapiro.test(residuals_anova_WK_b)
+qqnorm(residuals_anova_WK_b); qqline(residuals_anova_WK_b)
+leveneTest(result ~ inclusion, data = wakame_b)
+
+TukeyHSD(wakame_anova_model_b, "inclusion")
+
+# Wakame TWO WAY ANOVA
+wakame <- lip_data %>%
+  filter(diet %in% c("YLB", "WK2.5", "WK5", "WK10"), 
+  water_temp %in% c("20", "25"))
+str(wakame)
+
+# HUE
+wakame_H <- wakame %>%
+  filter(measurement %in% "H") %>%
+  mutate(
+    inclusion  = factor(diet),
+    water_temp = factor(water_temp)
+  )
+
+wakame_anova_model_H <- aov(result ~ inclusion * water_temp, data = wakame_H)
+summary(wakame_anova_model_H)
+
+# Assumptions
+residuals_anova_WK_H <- residuals(wakame_anova_model_H)
+
+shapiro.test(residuals_anova_WK_H)
+
+qqnorm(residuals_anova_WK_H)
+qqline(residuals_anova_WK_H)
+
+leveneTest(result ~ inclusion * water_temp, data = wakame_H)
+
+TukeyHSD(wakame_anova_model_H, "inclusion")
+TukeyHSD(wakame_anova_model_H, "water_temp")
+
+# SATURATION
+wakame_S <- wakame %>%
+  filter(measurement %in% "S") %>%
+  mutate(
+    inclusion  = factor(diet),
+    water_temp = factor(water_temp)
+  )
+
+wakame_anova_model_S <- aov(result ~ inclusion * water_temp, data = wakame_S)
+summary(wakame_anova_model_S)
+
+residuals_anova_WK_S <- residuals(wakame_anova_model_S)
+shapiro.test(residuals_anova_WK_S)
+
+qqnorm(residuals_anova_WK_S)
+qqline(residuals_anova_WK_S)
+
+leveneTest(result ~ inclusion * water_temp, data = wakame_S)
+
+TukeyHSD(wakame_anova_model_S, "inclusion")
+TukeyHSD(wakame_anova_model_S, "water_temp")
+
+# Non-parametric ANOVA
+srh_wakame_model_S <- scheirerRayHare(result ~ inclusion * water_temp,
+                                      data = wakame_S, verbose = TRUE)
+print(srh_wakame_model_S)
+
+dunn_wakame_model_S_water_temp <- DunnTest(result ~ water_temp, data = wakame_S)
+print(dunn_wakame_model_S_water_temp)
+
+dunn_wakame_model_S_inclusion <- DunnTest(result ~ inclusion, data = wakame_S)
+print(dunn_wakame_model_S_inclusion)
+
+# BRIGHTNESS
+wakame_B <- wakame %>%
+  filter(measurement %in% "B") %>%
+  mutate(
+    inclusion  = factor(diet),
+    water_temp = factor(water_temp)
+  )
+
+wakame_anova_model_B <- aov(result ~ inclusion * water_temp, data = wakame_B)
+summary(wakame_anova_model_B)
+
+residuals_anova_WK_B <- residuals(wakame_anova_model_B)
+shapiro.test(residuals_anova_WK_B)
+
+qqnorm(residuals_anova_WK_B)
+qqline(residuals_anova_WK_B)
+
+leveneTest(result ~ inclusion * water_temp, data = wakame_B)
+
+TukeyHSD(wakame_anova_model_B, "inclusion")
+TukeyHSD(wakame_anova_model_B, "water_temp")
+
+# L
+wakame_L <- wakame %>%
+  filter(measurement %in% "L") %>%
+  mutate(
+    inclusion  = factor(diet),
+    water_temp = factor(water_temp)
+  )
+
+wakame_anova_model_L <- aov(result ~ inclusion * water_temp, data = wakame_L)
+summary(wakame_anova_model_L)
+
+residuals_anova_WK_L <- residuals(wakame_anova_model_L)
+shapiro.test(residuals_anova_WK_L)
+
+qqnorm(residuals_anova_WK_L)
+qqline(residuals_anova_WK_L)
+
+leveneTest(result ~ inclusion * water_temp, data = wakame_L)
+
+TukeyHSD(wakame_anova_model_L, "inclusion")
+TukeyHSD(wakame_anova_model_L, "water_temp")
+
+# a
+wakame_a <- wakame %>%
+  filter(measurement %in% "a") %>%
+  mutate(
+    inclusion  = factor(diet),
+    water_temp = factor(water_temp)
+  )
+
+wakame_anova_model_a <- aov(result ~ inclusion * water_temp, data = wakame_a)
+summary(wakame_anova_model_a)
+
+residuals_anova_WK_a <- residuals(wakame_anova_model_a)
+shapiro.test(residuals_anova_WK_a)
+
+qqnorm(residuals_anova_WK_a)
+qqline(residuals_anova_WK_a)
+
+leveneTest(result ~ inclusion * water_temp, data = wakame_a)
+
+TukeyHSD(wakame_anova_model_a, "inclusion")
+TukeyHSD(wakame_anova_model_a, "water_temp")
+
+# b
+wakame_b <- wakame %>%
+  filter(measurement %in% "b") %>%
+  mutate(
+    inclusion  = factor(diet),
+    water_temp = factor(water_temp)
+  )
+
+wakame_anova_model_b <- aov(result ~ inclusion * water_temp, data = wakame_b)
+summary(wakame_anova_model_b)
+
+residuals_anova_WK_b <- residuals(wakame_anova_model_b)
+shapiro.test(residuals_anova_WK_b)
+
+qqnorm(residuals_anova_WK_b)
+qqline(residuals_anova_WK_b)
+
+leveneTest(result ~ inclusion * water_temp, data = wakame_b)
+
+TukeyHSD(wakame_anova_model_b, "inclusion")
+TukeyHSD(wakame_anova_model_b, "water_temp")
+
+# Spirulina ONE WAY ANOVA
+spirulina_18 <- lip_data %>%
+  filter(diet %in% c("YLB", "SP2.5", "SP5", "SP10"), 
+         water_temp %in% c("18"))
+str(spirulina_18)
+
+# HUE
+spirulina_H <- spirulina_18 %>%
+  filter(measurement == "H") %>%
+  mutate(inclusion = factor(diet))
+
+spirulina_anova_model_H <- aov(result ~ inclusion, data = spirulina_H)
+summary(spirulina_anova_model_H)
+
+# Assumptions
+residuals_anova_SP_H <- residuals(spirulina_anova_model_H)
+shapiro.test(residuals_anova_SP_H)  # Normality
+qqnorm(residuals_anova_SP_H); qqline(residuals_anova_SP_H)  # Q-Q plot
+leveneTest(result ~ inclusion, data = spirulina_H)  # Homogeneity of variance
+
+# Non-parametric ANOVA
+np_spirulina_model_H <- kruskal.test(result ~ inclusion, data = spirulina_H)
+print(np_spirulina_model_H)
+
+dunn_spirulina_model_H <- DunnTest(result ~ inclusion, data = spirulina_H, method = "bonferroni")
+print(dunn_spirulina_model_H)
+
+# SATURATION
+spirulina_S <- spirulina_18 %>%
+  filter(measurement == "S") %>%
+  mutate(inclusion = factor(diet))
+
+spirulina_anova_model_S <- aov(result ~ inclusion, data = spirulina_S)
+summary(spirulina_anova_model_S)
+
+residuals_anova_SP_S <- residuals(spirulina_anova_model_S)
+shapiro.test(residuals_anova_SP_S)
+qqnorm(residuals_anova_SP_S); qqline(residuals_anova_SP_S)
+leveneTest(result ~ inclusion, data = spirulina_S)
+
+TukeyHSD(spirulina_anova_model_S, "inclusion")
+
+# BRIGHTNESS
+spirulina_B <- spirulina_18 %>%
+  filter(measurement == "B") %>%
+  mutate(inclusion = factor(diet))
+
+spirulina_anova_model_B <- aov(result ~ inclusion, data = spirulina_B)
+summary(spirulina_anova_model_B)
+
+residuals_anova_SP_B <- residuals(spirulina_anova_model_B)
+shapiro.test(residuals_anova_SP_B)
+qqnorm(residuals_anova_SP_B); qqline(residuals_anova_SP_B)
+leveneTest(result ~ inclusion, data = spirulina_B)
+
+TukeyHSD(spirulina_anova_model_B, "inclusion")
+
+# L
+spirulina_L <- spirulina_18 %>%
+  filter(measurement == "L") %>%
+  mutate(inclusion = factor(diet))
+
+spirulina_anova_model_L <- aov(result ~ inclusion, data = spirulina_L)
+summary(spirulina_anova_model_L)
+
+residuals_anova_SP_L <- residuals(spirulina_anova_model_L)
+shapiro.test(residuals_anova_SP_L)
+qqnorm(residuals_anova_SP_L); qqline(residuals_anova_SP_L)
+leveneTest(result ~ inclusion, data = spirulina_L)
+
+TukeyHSD(spirulina_anova_model_L, "inclusion")
+
+# a
+spirulina_a <- spirulina_18 %>%
+  filter(measurement == "a") %>%
+  mutate(inclusion = factor(diet))
+
+spirulina_anova_model_a <- aov(result ~ inclusion, data = spirulina_a)
+summary(spirulina_anova_model_a)
+
+residuals_anova_SP_a <- residuals(spirulina_anova_model_a)
+shapiro.test(residuals_anova_SP_a)
+qqnorm(residuals_anova_SP_a); qqline(residuals_anova_SP_a)
+leveneTest(result ~ inclusion, data = spirulina_a)
+
+TukeyHSD(spirulina_anova_model_a, "inclusion")
+
+# b
+spirulina_b <- spirulina_18 %>%
+  filter(measurement == "b") %>%
+  mutate(inclusion = factor(diet))
+
+spirulina_anova_model_b <- aov(result ~ inclusion, data = spirulina_b)
+summary(spirulina_anova_model_b)
+
+residuals_anova_SP_b <- residuals(spirulina_anova_model_b)
+shapiro.test(residuals_anova_SP_b)
+qqnorm(residuals_anova_SP_b); qqline(residuals_anova_SP_b)
+leveneTest(result ~ inclusion, data = spirulina_b)
+
+TukeyHSD(spirulina_anova_model_b, "inclusion")
+
+#Spirulina ANOVA
+spirulina <- lip_data %>%
+  filter(diet %in% c("YLB", "SP2.5", "SP5", "SP10"), water_temp %in% c("20", "25"))
+
+#HUE
+spirulina_H <- spirulina %>%
+  filter(measurement %in% "H")
+
+spirulina_H <- spirulina_H %>%
+  mutate(
+    inclusion   = factor(diet),       
+    water_temp  = factor(water_temp)   
+  )
+
+spirulina_anova_model_H <- aov(result ~ inclusion * water_temp, data = spirulina_H)
+summary(spirulina_anova_model_H)
+
+#Assumptions
+# Extract residuals
+residuals_anova_SP_H <- residuals(spirulina_anova_model_H)
+
+# Shapiro-Wilk test
+shapiro.test(residuals_anova_SP_H)
+
+# Q-Q plot
+qqnorm(residuals_anova_SP_H)
+qqline(residuals_anova_SP_H)
+
+#Homogeneity of variance
+leveneTest(result ~ inclusion * water_temp, data = spirulina_H)
+
+#Non-parametric ANOVA
+# Run the Scheirer-Ray-Hare test
+srh_spirulina_model_H <- scheirerRayHare(result ~ inclusion * water_temp, data = spirulina_H, verbose = TRUE)
+print(srh_spirulina_model_H)
+
+dunn_spirulina_model_H_water_temp <- DunnTest(result ~ water_temp, data = spirulina_H)
+print(dunn_spirulina_model_H_water_temp)
+
+dunn_spirulina_model_H_inclusion <- DunnTest(result ~ inclusion, data = spirulina_H)
+print(dunn_spirulina_model_H_inclusion)
+
+#SATURATION
+spirulina_S <- spirulina %>%
+  filter(measurement %in% "S")
+
+spirulina_S <- spirulina_S %>%
+  mutate(
+    inclusion   = factor(diet),       
+    water_temp  = factor(water_temp) 
+  )
+
+spirulina_anova_model_S <- aov(result ~ inclusion * water_temp, data = spirulina_S)
+summary(spirulina_anova_model_S)
+
+#Assumptions
+# Extract residuals
+residuals_anova_SP_S <- residuals(spirulina_anova_model_S)
+
+# Shapiro-Wilk test
+shapiro.test(residuals_anova_SP_S)
+
+# Q-Q plot
+qqnorm(residuals_anova_SP_S)
+qqline(residuals_anova_SP_S)
+
+#Homogeneity of variance
+leveneTest(result ~ inclusion * water_temp, data = spirulina_S)
+
+# Tukey HSD for the main effect of inclusion
+TukeyHSD(spirulina_anova_model_S, "inclusion")
+
+# Tukey HSD for the main effect of water_temp
+TukeyHSD(spirulina_anova_model_S, "water_temp")
+
+#BRIGHTNESS
+spirulina_B <- spirulina %>%
+  filter(measurement %in% "B")
+
+spirulina_B <- spirulina_B %>%
+  mutate(
+    inclusion   = factor(diet),       
+    water_temp  = factor(water_temp) 
+  )
+
+spirulina_anova_model_B <- aov(result ~ inclusion * water_temp, data = spirulina_B)
+summary(spirulina_anova_model_B)
+
+#Assumptions
+# Extract residuals
+residuals_anova_SP_B <- residuals(spirulina_anova_model_B)
+
+# Shapiro-Wilk test
+shapiro.test(residuals_anova_SP_B)
+
+# Q-Q plot
+qqnorm(residuals_anova_SP_B)
+qqline(residuals_anova_SP_B)
+
+#Homogeneity of variance
+leveneTest(result ~ inclusion * water_temp, data = spirulina_B)
+
+# Tukey HSD for the main effect of inclusion
+TukeyHSD(spirulina_anova_model_B, "inclusion")
+
+# Tukey HSD for the main effect of water_temp
+TukeyHSD(spirulina_anova_model_B, "water_temp")
+
+#L
+spirulina_L <- spirulina %>%
+  filter(measurement %in% "L")
+
+spirulina_L <- spirulina_L %>%
+  mutate(
+    inclusion   = factor(diet),       
+    water_temp  = factor(water_temp) 
+  )
+
+spirulina_anova_model_L <- aov(result ~ inclusion * water_temp, data = spirulina_L)
+summary(spirulina_anova_model_L)
+
+#Assumptions
+# Extract residuals
+residuals_anova_SP_L <- residuals(spirulina_anova_model_L)
+
+# Shapiro-Wilk test
+shapiro.test(residuals_anova_SP_L)
+
+# Q-Q plot
+qqnorm(residuals_anova_SP_L)
+qqline(residuals_anova_SP_L)
+
+#Homogeneity of variance
+leveneTest(result ~ inclusion * water_temp, data = spirulina_L)
+
+# Tukey HSD for the main effect of inclusion
+TukeyHSD(spirulina_anova_model_L, "inclusion")
+
+# Tukey HSD for the main effect of water_temp
+TukeyHSD(spirulina_anova_model_L, "water_temp")
+
+#a
+spirulina_a <- spirulina %>%
+  filter(measurement %in% "a")
+
+spirulina_a <- spirulina_a %>%
+  mutate(
+    inclusion   = factor(diet),       
+    water_temp  = factor(water_temp) 
+  )
+
+spirulina_anova_model_a <- aov(result ~ inclusion * water_temp, data = spirulina_a)
+summary(spirulina_anova_model_a)
+
+#Assumptions
+# Extract residuals
+residuals_anova_SP_a <- residuals(spirulina_anova_model_a)
+
+# Shapiro-Wilk test
+shapiro.test(residuals_anova_SP_a)
+
+# Q-Q plot
+qqnorm(residuals_anova_SP_a)
+qqline(residuals_anova_SP_a)
+
+#Homogeneity of variance
+leveneTest(result ~ inclusion * water_temp, data = spirulina_a)
+
+# Tukey HSD for the main effect of inclusion
+TukeyHSD(spirulina_anova_model_a, "inclusion")
+
+# Tukey HSD for the main effect of water_temp
+TukeyHSD(spirulina_anova_model_a, "water_temp")
+
+#b
+spirulina_b <- spirulina %>%
+  filter(measurement %in% "b")
+
+spirulina_b <- spirulina_b %>%
+  mutate(
+    inclusion   = factor(diet),       
+    water_temp  = factor(water_temp) 
+  )
+
+spirulina_anova_model_b <- aov(result ~ inclusion * water_temp, data = spirulina_b)
+summary(spirulina_anova_model_b)
+
+#Assumptions
+# Extract residuals
+residuals_anova_SP_b <- residuals(spirulina_anova_model_b)
+
+# Shapiro-Wilk test
+shapiro.test(residuals_anova_SP_b)
+
+# Q-Q plot
+qqnorm(residuals_anova_SP_b)
+qqline(residuals_anova_SP_b)
+
+#Homogeneity of variance
+leveneTest(result ~ inclusion * water_temp, data = spirulina_b)
+
+# Tukey HSD for the main effect of inclusion
+TukeyHSD(spirulina_anova_model_b, "inclusion")
+
+# Tukey HSD for the main effect of water_temp
+TukeyHSD(spirulina_anova_model_b, "water_temp")
