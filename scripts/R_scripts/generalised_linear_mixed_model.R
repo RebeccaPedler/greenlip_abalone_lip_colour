@@ -27,11 +27,12 @@ library(car)
 setwd("C:/Users/RebeccaPedler/OneDrive - Yumbah/Documents/R&D/Industry PhD/Trials/Commercial trial")
 
 df_raw <- read.csv("lip_colour_commercial.csv", stringsAsFactors = FALSE)
+str(df_raw)
 
-names(df_raw) <- c("date", "farm", "section", "tank", "yc", "diet",
+names(df_raw) <- c("image_id", "date", "farm", "section", "tank", "yc", "age", "diet",
                    "shade_coverage", "section_coverage", "tank_position",
-                   "abalone_number", "image_id",
-                   "lightness", "a", "b")
+                   "abalone_number", "lightness", "a", "b", "length_mm", 
+                   "width_mm", "area_mm2")
 
 df_raw <- df_raw |>
   mutate(across(where(is.character), str_trim)) |>
@@ -39,6 +40,7 @@ df_raw <- df_raw |>
 
 df_raw <- df_raw |> filter(!is.na(section_coverage)) # Delete NA
 df_raw <- df_raw |> filter(lightness != 0) # Delete zero
+df_raw <- df_raw |> filter(!is.na(length_mm)) # Delete NA
 
 # Correct data types
 df <- df_raw |>
@@ -61,6 +63,7 @@ df <- df_raw |>
     section       = factor(section),
     tank          = factor(tank),
     yc            = factor(yc, levels = c(21, 22)),
+    age           = factor(age, levels = c(19, 31)),
     diet          = factor(diet),
     tank_position = factor(tank_position),
 
@@ -68,6 +71,9 @@ df <- df_raw |>
     lightness  = as.numeric(lightness),
     a          = as.numeric(a),
     b          = as.numeric(b),
+    length     = as.numeric(length_mm),
+    width      = as.numeric(width_mm),
+    area       = as.numeric(area_mm2),
 
     abalone_id = paste(tank, abalone_number, sep = "_")
   )
@@ -76,8 +82,8 @@ str(df)
 
 ### OBSERVE LEVELS AND OBSERVATIONS FOR EACH FACTOR
 
-factor_vars <- c("farm", "section", "yc", "diet",
-                 "shade_coverage", "section_coverage")
+factor_vars <- c("farm", "section", "age", "diet",
+                 "section_coverage")
 
 for (v in factor_vars) {
   cat(sprintf("\n--- %s ---\n", v))
@@ -96,13 +102,6 @@ df |>
   as.data.frame() |>
   print(row.names = FALSE)
 
-# Tanks per section_coverage x shade_coverage (confounding check) 
-df |>
-  distinct(tank, section_coverage, shade_coverage) |>
-  count(section_coverage, shade_coverage) |>
-  as.data.frame() |>
-  print(row.names = FALSE)
-
 # Abalone per tank
 df |>
   count(tank, name = "n_abalone") |>
@@ -112,7 +111,6 @@ df |>
             max  = max(n_abalone)) |>
   as.data.frame() |>
   print(row.names = FALSE)
-
 
 ### GENERAL DATA OBSERVATIONS BY PLOTTING
 
@@ -289,7 +287,6 @@ df |>
   as.data.frame() |>
   print(row.names = FALSE)
 
-cat("\n=== Mean b* by diet ===\n")
 df |>
   group_by(diet) |>
   summarise(n      = n(),
@@ -301,7 +298,6 @@ df |>
   as.data.frame() |>
   print(row.names = FALSE)
 
-cat("\n=== Mean b* by YC ===\n")
 df |>
   group_by(yc) |>
   summarise(n      = n(),
@@ -455,8 +451,8 @@ df_mod <- df |>
     yc               = factor(yc,               ordered = FALSE),
     diet             = factor(diet),
     section_coverage = relevel(section_coverage, ref = "single"),
-    yc               = relevel(yc,               ref = "21"),
-    diet             = relevel(diet,             ref = "Mari")   # change ref level if preferred
+    yc               = relevel(yc,               ref = "22"),
+    diet             = relevel(diet,             ref = "Pink")  
   )
 
 # NULL MODELS & ICC 
@@ -490,17 +486,17 @@ print(icc_table, row.names = FALSE)
 
 # Order: null → + section_coverage → + yc → + diet (in order of hypothetic importance)
 
-fit_steps <- function(response) {
+fit_steps <- function(response, data = df_mod) {
   f0  <- as.formula(paste(response, "~ 1                              + (1|tank)"))
   f1  <- as.formula(paste(response, "~ section_coverage               + (1|tank)"))
   f2  <- as.formula(paste(response, "~ section_coverage + yc          + (1|tank)"))
   f3  <- as.formula(paste(response, "~ section_coverage + yc + diet   + (1|tank)"))
 
   list(
-    m0 = lmer(f0, data = df_mod, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
-    m1 = lmer(f1, data = df_mod, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
-    m2 = lmer(f2, data = df_mod, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
-    m3 = lmer(f3, data = df_mod, REML = FALSE, control = lmerControl(optimizer = "bobyqa"))
+    m0 = lmer(f0, data = data, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
+    m1 = lmer(f1, data = data, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
+    m2 = lmer(f2, data = data, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
+    m3 = lmer(f3, data = data, REML = FALSE, control = lmerControl(optimizer = "bobyqa"))
   )
 }
 
@@ -509,10 +505,6 @@ models_L <- fit_steps("lightness")
 models_a <- fit_steps("a")
 
 # AIC / BIC COMPARISON TABLE 
-
-cat(strrep("=", 60), "\n")
-cat("SECTION 3: AIC / BIC COMPARISON\n")
-cat(strrep("=", 60), "\n\n")
 
 model_labels <- c(
   "m0: null (intercept only)",
@@ -545,7 +537,7 @@ aic_all <- bind_rows(
   aic_table(models_a, "a*")
 )
 
-# Print per response with clear annotation
+# Print per response 
 for (resp in c("b*", "L*", "a*")) {
   cat(sprintf("--- %s ---\n", resp))
   tbl <- aic_all |> filter(response == resp) |> select(-response)
@@ -559,7 +551,7 @@ for (resp in c("b*", "L*", "a*")) {
     cat("  Note: Multiple models within dAIC < 2 — consider parsimony.\n")
   }
   cat("\n")
-}  # Flag if dAIC < 2 (models within 2 AIC units are competitive)
+}  
 
 # LIKELIHOOD RATIO TESTS: LRT at each forward step — tests whether adding each predictor
 
@@ -607,7 +599,7 @@ for (resp in c("b*", "L*", "a*")) {
 ## REFIT SELECTED MODEL WITH REML 
 
 final_formula_b <- b         ~ section_coverage + yc + diet + (1|tank)
-final_formula_L <- lightness ~ section_coverage + yc + diet + (1|tank)
+final_formula_L <- lightness ~ section_coverage + (1|tank)
 final_formula_a <- a         ~ section_coverage + yc + diet + (1|tank)
 
 full_b <- lmer(final_formula_b, data = df_mod, REML = TRUE,
@@ -622,23 +614,22 @@ for (lst in list(list(full_b, "b*"),
                  list(full_L, "L*"),
                  list(full_a, "a*"))) {
   mod <- lst[[1]]; response <- lst[[2]]
-  cat(sprintf("\n%s\n=== REML model: %s ===\n%s\n",
-              strrep("-", 55), response, strrep("-", 55)))
-  print(summary(mod))
 
-  # Random effects variance components
+  print(summary(mod))
   print(as.data.frame(VarCorr(mod))[, c("grp", "var1", "vcov", "sdcor")],
         row.names = FALSE)
 
-  # Variance Inflation Factors
-  print(round(car::vif(mod), 3))
+  if (length(fixef(mod)) > 2) {             
+    print(round(car::vif(mod), 3))
+  } else {
+    cat("  VIF: not computed (single fixed effect)\n")
+  }
 
-  # R² marginal (fixed effects only) and conditional (fixed + random)
-  cat("\n--- R² (marginal = fixed only; conditional = fixed + random) ---\n")
-  r2 <- performance::r2(mod)
+r2 <- performance::r2(mod)
   cat(sprintf("  R² marginal:    %.3f\n", r2$R2_marginal))
   cat(sprintf("  R² conditional: %.3f\n", r2$R2_conditional))
   cat("\n")
+
 }
 
 ## CONSOLIDATED SUMMARY TABLE 
@@ -650,10 +641,8 @@ aic_wide <- aic_all |>
               values_from = c(AIC, dAIC),
               names_glue = "{response}_{.value}")
 
-cat("--- AIC by model step and response ---\n")
 print(aic_wide, row.names = FALSE)
 
-cat("\n--- LRT p-values by term and response ---\n")
 lrt_wide <- lrt_all |>
   select(response, term_added, chi2, df, p_value, sig) |>
   pivot_wider(names_from = response,
@@ -667,12 +656,18 @@ for (lst in list(list(full_b, "b*"),
                  list(full_L, "L*"),
                  list(full_a, "a*"))) {
   mod <- lst[[1]]; response <- lst[[2]]
-  for (term in c("section_coverage", "yc", "diet")) {
-    cat(sprintf("\n--- %s: %s ---\n", response, term))
-    emm <- emmeans(mod, specs = term)
+  
+  emm <- emmeans(mod, specs = "section_coverage")
+  print(emm)
+  print(pairs(emm, adjust = "tukey"))
+  
+  if (response != "L*") {
+    for (term in c("yc", "diet")) {
+    cat(sprintf("\n--- %s: section_coverage ---\n", response))
+    emm <- emmeans(mod, specs = "section_coverage")
     print(emm)
-    cat("  Pairwise contrasts (Tukey):\n")
     print(pairs(emm, adjust = "tukey"))
+    }
   }
 }
 
@@ -691,13 +686,13 @@ extract_coefs <- function(mod, response) {
       ci_hi      = estimate + 1.96 * se,
       sig        = ifelse(p < 0.05, "p < 0.05", "p \u2265 0.05"),
       term_clean = case_when(
-        term == "section_coveragedouble" ~ "Section coverage: double vs single",
-        term == "yc22"                   ~ "Year class: 22 vs 21",
-        term == "dietLight blue"         ~ "Diet: Light blue vs Mari",
-        term == "dietPink"               ~ "Diet: Pink vs Mari",
-        term == "dietPurple"             ~ "Diet: Purple vs Mari",
-        term == "dietRidley"             ~ "Diet: Ridley vs Mari",
-        TRUE                             ~ term
+      term == "section_coveragedouble" ~ "Section coverage: double vs single",
+      term == "yc21"                   ~ "Year class: 21 vs 22",        
+      term == "dietLight blue"         ~ "Diet: Light blue vs Pink",    
+      term == "dietMari"               ~ "Diet: Mari vs Pink",         
+      term == "dietPurple"             ~ "Diet: Purple vs Pink",        
+      term == "dietRidley"             ~ "Diet: Ridley vs Pink",        
+      TRUE                             ~ term
       ),
       term_group = case_when(
         str_detect(term, "section") ~ "Light exposure",
@@ -734,7 +729,7 @@ p_forest <- ggplot(coef_df,
     x        = "Estimate (95% CI)",
     y        = NULL,
     title    = "Fixed effect estimates — LMM (b*, L*, a*)",
-    subtitle = "Random: (1|section/tank) \u00b7 Reference: coverage single, YC21, diet Mari\nBlue = p < 0.05"
+    subtitle = "Random: (1|tank) · Reference: single coverage, YC22, diet Pink\nBlue = p < 0.05"
   ) +
   theme_minimal(base_size = 12) +
   theme(
@@ -787,10 +782,8 @@ emm_sec  <- bind_rows(emm_data(full_b,"section_coverage","b*"),
                       emm_data(full_L,"section_coverage","L*"),
                       emm_data(full_a,"section_coverage","a*"))
 emm_yc   <- bind_rows(emm_data(full_b,"yc","b*"),
-                      emm_data(full_L,"yc","L*"),
                       emm_data(full_a,"yc","a*"))
 emm_diet <- bind_rows(emm_data(full_b,"diet","b*"),
-                      emm_data(full_L,"diet","L*"),
                       emm_data(full_a,"diet","a*"))
 
 p_emm_sec  <- emm_plot(emm_sec,  "Section coverage", "EMM: section coverage")
@@ -838,3 +831,166 @@ diag_plots <- function(mod, response, filename) {
 diag_plots(full_b, "b*", "plot_10_diagnostics_b.png")
 diag_plots(full_L, "L*", "plot_11_diagnostics_L.png")
 diag_plots(full_a, "a*", "plot_12_diagnostics_a.png")
+
+
+# SENSITIVITY TEST
+
+## Ridley, Light blue and Purple are fully confounded with YC. 
+## Repeat modelling steps with sensitive dataset restricting to Mari & Pink (both YCs represented)
+
+# Create sensitive dataset
+
+df_balanced <- df_mod |>
+  filter(diet %in% c("Mari", "Pink"))
+
+cat(sprintf("  Full dataset:     n = %d across %d tanks\n",
+            nrow(df_mod), n_distinct(df_mod$tank)))
+cat(sprintf("  Balanced subset:  n = %d across %d tanks (Mari + Pink only)\n\n",
+            nrow(df_balanced), n_distinct(df_balanced$tank)))
+
+# Confirm representation in dataset
+
+df_balanced |>
+  distinct(tank, yc, diet) |>
+  count(yc, diet) |>
+  as.data.frame() |>
+  print(row.names = FALSE)
+
+# ICC 
+
+icc_sens <- data.frame(
+  response = c("b*", "L*", "a*"),
+  ICC = round(c(
+    performance::icc(lmer(b         ~ 1 + (1|tank), data = df_balanced,
+                          REML = TRUE, control = lmerControl(optimizer = "bobyqa")))$ICC_adjusted,
+    performance::icc(lmer(lightness ~ 1 + (1|tank), data = df_balanced,
+                          REML = TRUE, control = lmerControl(optimizer = "bobyqa")))$ICC_adjusted,
+    performance::icc(lmer(a         ~ 1 + (1|tank), data = df_balanced,
+                          REML = TRUE, control = lmerControl(optimizer = "bobyqa")))$ICC_adjusted
+  ), 3)
+)
+
+print(icc_sens, row.names = FALSE)
+
+## FORWARD MODEL SELECTION 
+
+# Have reused fit_steps() and aic_table() from initial modelling script, applied to df_balanced
+
+sens_models_b <- fit_steps("b",         data = df_balanced)
+sens_models_L <- fit_steps("lightness", data = df_balanced)
+sens_models_a <- fit_steps("a",         data = df_balanced)
+
+aic_sens <- bind_rows(
+  aic_table(sens_models_b, "b*"),
+  aic_table(sens_models_L, "L*"),
+  aic_table(sens_models_a, "a*")
+)
+
+for (resp in c("b*", "L*", "a*")) {
+  cat(sprintf("--- %s ---\n", resp))
+  tbl <- aic_sens |> filter(response == resp) |> select(-response)
+  print(tbl, row.names = FALSE)
+  best <- tbl$model[which.min(tbl$AIC)]
+  cat(sprintf("  Best by AIC: %s\n", best))
+  if (nrow(tbl |> filter(dAIC < 2)) > 1)
+    cat("  Note: Multiple models within dAIC < 2 — consider parsimony.\n")
+  cat("\n")
+}
+
+# Model selection is the same
+
+## SEQUENTIAL LRTs 
+
+lrt_sens <- bind_rows(
+  lrt_sequential(sens_models_b, "b*"),
+  lrt_sequential(sens_models_L, "L*"),
+  lrt_sequential(sens_models_a, "a*")
+)
+
+for (resp in c("b*", "L*", "a*")) {
+  cat(sprintf("--- %s ---\n", resp))
+  print(
+    lrt_sens |> filter(response == resp) |> select(term_added, chi2, df, p_value, sig),
+    row.names = FALSE
+  )
+  cat("\n")
+}
+
+# REML FINAL MODELS 
+
+sens_b <- lmer(b         ~ section_coverage + yc + diet + (1|tank),
+               data = df_balanced, REML = TRUE,
+               control = lmerControl(optimizer = "bobyqa"))
+sens_L <- lmer(lightness ~ section_coverage                + (1|tank),
+               data = df_balanced, REML = TRUE,
+               control = lmerControl(optimizer = "bobyqa"))
+sens_a <- lmer(a         ~ section_coverage + yc + diet + (1|tank),
+               data = df_balanced, REML = TRUE,
+               control = lmerControl(optimizer = "bobyqa"))
+
+for (lst in list(list(sens_b, "b*"),
+                 list(sens_L, "L*"),
+                 list(sens_a, "a*"))) {
+  mod <- lst[[1]]; resp <- lst[[2]]
+   print(summary(mod))
+
+  print(as.data.frame(VarCorr(mod))[, c("grp", "var1", "vcov", "sdcor")],
+        row.names = FALSE)
+
+  # VIF only meaningful with 2+ fixed effects
+  if (length(fixef(mod)) > 2) {
+    cat("\n  VIF:\n")
+    print(round(car::vif(mod), 3))
+  } else {
+    cat("\n  VIF: not computed (single fixed effect)\n")
+  }
+
+  r2 <- performance::r2(mod)
+  cat(sprintf("\n  R² marginal:    %.3f\n", r2$R2_marginal))
+  cat(sprintf("  R² conditional: %.3f\n\n", r2$R2_conditional))
+}
+
+# COEFFICIENT COMPARISON: full vs sensitivity 
+
+extract_key_coefs <- function(mod, label) {
+  coefs <- as.data.frame(coef(summary(mod)))
+  coefs$term <- rownames(coefs)
+  coefs |>
+    filter(term != "(Intercept)") |>
+    transmute(
+      term,
+      model    = label,
+      estimate = round(Estimate,      3),
+      se       = round(`Std. Error`,  3),
+      p        = round(`Pr(>|t|)`,    4),
+      sig      = case_when(
+        `Pr(>|t|)` < 0.001 ~ "***",
+        `Pr(>|t|)` < 0.01  ~ "**",
+        `Pr(>|t|)` < 0.05  ~ "*",
+        `Pr(>|t|)` < 0.1   ~ ".",
+        TRUE               ~ "ns"
+      )
+    )
+}
+
+# b* comparison
+coef_compare_b <- bind_rows(
+  extract_key_coefs(full_b, "Full model (n=1265)"),
+  extract_key_coefs(sens_b, "Balanced subset (n=697)")
+) |>
+  arrange(term, model)
+
+print(coef_compare_b, row.names = FALSE)
+
+# a* comparison
+coef_compare_a <- bind_rows(
+  extract_key_coefs(full_a, "Full model (n=1265)"),
+  extract_key_coefs(sens_a, "Balanced subset (n=697)")
+) |>
+  arrange(term, model)
+
+print(coef_compare_a, row.names = FALSE)
+
+
+# Now have abalone width and length. Is this a better fixed effect than age?
+
