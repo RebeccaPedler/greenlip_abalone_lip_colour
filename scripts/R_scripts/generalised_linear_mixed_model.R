@@ -26,7 +26,7 @@ library(car)
 
 setwd("C:/Users/RebeccaPedler/OneDrive - Yumbah/Documents/R&D/Industry PhD/Trials/Commercial trial")
 
-df_raw <- read.csv("lip_colour_commercial.csv", stringsAsFactors = FALSE)
+df_raw <- read.csv("lip_colour_commercial.csv")
 str(df_raw)
 
 names(df_raw) <- c("image_id", "date", "farm", "section", "tank", "yc", "age", "diet",
@@ -79,6 +79,53 @@ df <- df_raw |>
   )
 
 str(df)
+
+### CLEAN DATA 
+
+# Flag duplicate image IDs
+dupes <- df_raw |> filter(duplicated(image_id) | duplicated(image_id, fromLast = TRUE))
+if (nrow(dupes) > 0) {
+  cat("WARNING: Duplicate image IDs found:\n")
+  print(dupes[, c("image_id", "tank", "abalone_number")], row.names = FALSE)
+} else {
+  cat("No duplicate image IDs.\n")
+}
+
+# Check CIELAB metrics 
+cat(sprintf("  L*: min=%.2f, max=%.2f  (expect 0-100)\n",
+            min(df$lightness, na.rm=TRUE), max(df$lightness, na.rm=TRUE)))
+cat(sprintf("  a*: min=%.2f, max=%.2f\n",
+            min(df$a, na.rm=TRUE), max(df$a, na.rm=TRUE)))
+cat(sprintf("  b*: min=%.2f, max=%.2f\n",
+            min(df$b, na.rm=TRUE), max(df$b, na.rm=TRUE)))
+
+# Flag any L* outside valid range
+invalid_L <- df |> filter(lightness < 0 | lightness > 100)
+if (nrow(invalid_L) > 0) {
+  cat("WARNING: Invalid L* values:\n")
+  print(invalid_L[, c("image_id", "tank", "lightness")], row.names = FALSE)
+}
+
+# Flag within-tank outliers (>3 SD from tank mean) for each colour metric
+flag_outliers <- function(data, var) {
+  data |>
+    group_by(tank) |>
+    mutate(
+      tank_mean = mean(.data[[var]], na.rm = TRUE),
+      tank_sd   = sd(.data[[var]],   na.rm = TRUE),
+      z_within  = (.data[[var]] - tank_mean) / tank_sd,
+      outlier   = abs(z_within) > 3
+    ) |>
+    ungroup() |>
+    filter(outlier) |>
+    select(image_id, tank, diet, yc, all_of(var), z_within)
+}
+
+for (var in c("lightness", "a", "b")) {
+  out <- flag_outliers(df, var)
+  cat(sprintf("\n  Within-tank outliers (|z|>3) for %s: %d rows\n", var, nrow(out)))
+  if (nrow(out) > 0) print(as.data.frame(out), row.names = FALSE)
+}
 
 ### OBSERVE LEVELS AND OBSERVATIONS FOR EACH FACTOR
 
@@ -275,7 +322,6 @@ df |>
   as.data.frame() |>
   print(row.names = FALSE)
 
-cat("\n=== Mean b* by section_coverage x YC ===\n")
 df |>
   group_by(section_coverage, yc) |>
   summarise(n      = n(),
@@ -599,7 +645,7 @@ for (resp in c("b*", "L*", "a*")) {
 ## REFIT SELECTED MODEL WITH REML 
 
 final_formula_b <- b         ~ section_coverage + yc + diet + (1|tank)
-final_formula_L <- lightness ~ section_coverage + (1|tank)
+final_formula_L <- lightness ~ section_coverage + yc + diet + (1|tank)
 final_formula_a <- a         ~ section_coverage + yc + diet + (1|tank)
 
 full_b <- lmer(final_formula_b, data = df_mod, REML = TRUE,
@@ -832,8 +878,7 @@ diag_plots(full_b, "b*", "plot_10_diagnostics_b.png")
 diag_plots(full_L, "L*", "plot_11_diagnostics_L.png")
 diag_plots(full_a, "a*", "plot_12_diagnostics_a.png")
 
-
-# SENSITIVITY TEST
+### Script 04: Sensitivity test to substantiate dietary affect
 
 ## Ridley, Light blue and Purple are fully confounded with YC. 
 ## Repeat modelling steps with sensitive dataset restricting to Mari & Pink (both YCs represented)
@@ -993,4 +1038,386 @@ print(coef_compare_a, row.names = FALSE)
 
 
 # Now have abalone width and length. Is this a better fixed effect than age?
+
+### Script 05: Size metrics — collinearity with YC + LMM comparison (yc vs length)
+
+# Are size metrics (length, width, area) correlated with each other?
+# Does length_mm perform better than yc as a predictor of lip colour?
+
+# Prepare data
+
+# Add numeric yc for correlation purposes
+df <- df |>
+  mutate(yc_num = as.numeric(as.character(yc)))
+
+str(df)
+ 
+resp_cols <- c("b*" = "#C4A24A", "L*" = "#5B8FA8", "a*" = "#7A9E5A")
+yc_cols   <- c("21" = "#E07B39", "22" = "#5B8FA8")
+ 
+# HISTOGRAMS: size metrics coloured by YC
+
+make_hist <- function(var, xlab, binwidth = NULL) {
+  if (is.null(binwidth)) {
+    rng      <- range(df[[var]], na.rm = TRUE)
+    binwidth <- (rng[2] - rng[1]) / 40
+  }
+  summ <- df |>
+    filter(!is.na(.data[[var]])) |>
+    group_by(yc) |>
+    summarise(med = median(.data[[var]], na.rm = TRUE), .groups = "drop")
+
+  ggplot(df |> filter(!is.na(.data[[var]])),
+         aes(x = .data[[var]], fill = yc, colour = yc)) +
+    geom_histogram(binwidth = binwidth, alpha = 0.55,
+                   position = "identity", linewidth = 0.2) +
+    geom_density(aes(y = after_stat(density) *
+                       nrow(df |> filter(!is.na(.data[[var]]))) * binwidth),
+                 linewidth = 0.7, alpha = 0) +
+    geom_vline(data = summ, aes(xintercept = med, colour = yc),
+               linetype = "dashed", linewidth = 0.7) +
+    scale_fill_manual(values = yc_cols, name = "Year class") +
+    scale_colour_manual(values = yc_cols, name = "Year class") +
+    labs(x = xlab, y = "Count",
+         caption = "Dashed lines = median per year class") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          legend.position  = "right",
+          plot.caption     = element_text(size = 8, colour = "grey50"))
+}
+
+p_len  <- make_hist("length", "Length (mm)")
+p_wid  <- make_hist("width",  "Width (mm)")
+p_area <- make_hist("area",   "Area (mm²)", binwidth = 300)
+
+p_size_hists <- (p_len / p_wid / p_area) +
+  plot_annotation(
+    title    = "Size metrics by year class",
+    subtitle = paste0(
+      "n = ", sum(!is.na(df$length)), " abalone with size data · ",
+      "YC21 = orange, YC22 = blue"
+    ),
+    theme = theme(
+      plot.title    = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 10, colour = "grey40")
+    )
+  )
+
+print(p_size_hists)
+
+ggsave("plot_size_histograms_by_yc.png", p_size_hists,
+       width = 9, height = 10, dpi = 150)
+
+
+# COLLINEARITY: size metrics × each other × YC
+
+cor_matrix <- df |>
+  select(length, width, area, yc_num) |>  
+  cor(use = "complete.obs") |>           
+  round(3)
+print(cor_matrix)
+
+# Flag pairs that exceed threshold
+pairs_to_check <- combn(c("length", "width", "area", "yc_num"), 2, simplify = FALSE)
+
+for (pair in pairs_to_check) {
+  r        <- cor_matrix[pair[1], pair[2]]
+  severity <- case_when(
+    abs(r) > 0.85 ~ "SEVERE — cannot include both",
+    abs(r) > 0.70 ~ "Moderate — include with caution",
+    TRUE          ~ "Low — safe to include together"
+  )
+  cat(sprintf("  %-10s x %-10s  r = %+.3f  [%s]\n",
+              pair[1], pair[2], r, severity))
+}
+
+## Correlation assessment confirms that YC and size cannot co-exist in same GLMM
+
+## Determine if size is a better predictor by running models and comparing
+
+# MODELLING DATASETS 
+
+# Model A dataset: includes yc (Script 03 approach)
+df_modA <- df |>
+  filter(!is.na(section_coverage), !is.na(yc), !is.na(diet),
+         !is.na(b), !is.na(a), !is.na(lightness),
+         lightness != 0) |>
+  mutate(
+    section_coverage = factor(section_coverage, ordered = FALSE),
+    yc               = factor(yc,               ordered = FALSE),
+    diet             = factor(diet),
+    section_coverage = relevel(section_coverage, ref = "single"),
+    yc               = relevel(yc,               ref = "21"),
+    diet             = relevel(diet,             ref = "Mari")
+  )
+
+# Model B dataset: includes length (must also have size data)
+df_modB <- df |>
+  filter(!is.na(section_coverage), !is.na(diet),
+         !is.na(b), !is.na(a), !is.na(lightness),
+         !is.na(length), lightness != 0) |>
+  mutate(
+    section_coverage = factor(section_coverage, ordered = FALSE),
+    diet             = factor(diet),
+    section_coverage = relevel(section_coverage, ref = "single"),
+    diet             = relevel(diet,             ref = "Mari"),
+    length_scaled    = scale(length)[, 1]   # z-score: 1 unit = 1 SD (~14mm)
+  )
+
+# Confirm size of datasets
+
+cat(sprintf("  Model A (yc):    n = %d, tanks = %d\n",
+            nrow(df_modA), n_distinct(df_modA$tank)))
+cat(sprintf("  Model B (length): n = %d, tanks = %d\n",
+            nrow(df_modB), n_distinct(df_modB$tank)))
+cat(sprintf("  length SD = %.1f mm (1 unit of length_scaled = %.1f mm)\n\n",
+            sd(df_modB$length), sd(df_modB$length)))
+
+# FORWARD SELECTION: MODEL A (yc)
+
+fit_A <- function(response) {
+  list(
+    m0 = lmer(as.formula(paste(response, "~ 1 + (1|tank)")),
+              data = df_modA, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
+    m1 = lmer(as.formula(paste(response, "~ section_coverage + (1|tank)")),
+              data = df_modA, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
+    m2 = lmer(as.formula(paste(response, "~ section_coverage + yc + (1|tank)")),
+              data = df_modA, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
+    m3 = lmer(as.formula(paste(response, "~ section_coverage + yc + diet + (1|tank)")),
+              data = df_modA, REML = FALSE, control = lmerControl(optimizer = "bobyqa"))
+  )
+}
+
+# FORWARD SELECTION: MODEL B (length) 
+
+fit_B <- function(response) {
+  list(
+    m0 = lmer(as.formula(paste(response, "~ 1 + (1|tank)")),
+              data = df_modB, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
+    m1 = lmer(as.formula(paste(response, "~ section_coverage + (1|tank)")),
+              data = df_modB, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
+    m2 = lmer(as.formula(paste(response, "~ section_coverage + length_scaled + (1|tank)")),
+              data = df_modB, REML = FALSE, control = lmerControl(optimizer = "bobyqa")),
+    m3 = lmer(as.formula(paste(response, "~ section_coverage + length_scaled + diet + (1|tank)")),
+              data = df_modB, REML = FALSE, control = lmerControl(optimizer = "bobyqa"))
+  )
+}
+
+# Fit both models
+modsA <- list(b = fit_A("b"), L = fit_A("lightness"), a = fit_A("a"))
+modsB <- list(b = fit_B("b"), L = fit_B("lightness"), a = fit_B("a"))
+
+# Generic AIC table function
+make_aic <- function(mods, labels, response, model_name) {
+  aic_vals <- sapply(mods, AIC)
+  bic_vals <- sapply(mods, BIC)
+  loglik   <- sapply(mods, logLik)
+  df_used  <- sapply(mods, function(m) attr(logLik(m), "df"))
+  data.frame(
+    model_type = model_name,
+    response   = response,
+    step       = labels,
+    df         = df_used,
+    logLik     = round(loglik,   2),
+    AIC        = round(aic_vals, 2),
+    dAIC       = round(aic_vals - min(aic_vals), 2),
+    BIC        = round(bic_vals, 2),
+    dBIC       = round(bic_vals - min(bic_vals), 2)
+  )
+}
+
+labelsA <- c("m0: null", "m1: + section_coverage",
+             "m2: + section_coverage + yc",
+             "m3: + section_coverage + yc + diet")
+labelsB <- c("m0: null", "m1: + section_coverage",
+             "m2: + section_coverage + length_mm",
+             "m3: + section_coverage + length_mm + diet")
+
+aic_A <- bind_rows(
+  make_aic(modsA$b, labelsA, "b*", "A: yc"),
+  make_aic(modsA$L, labelsA, "L*", "A: yc"),
+  make_aic(modsA$a, labelsA, "a*", "A: yc")
+)
+aic_B <- bind_rows(
+  make_aic(modsB$b, labelsB, "b*", "B: length"),
+  make_aic(modsB$L, labelsB, "L*", "B: length"),
+  make_aic(modsB$a, labelsB, "a*", "B: length")
+)
+
+# Print AIC tables
+for (resp in c("b*", "L*", "a*")) {
+  cat(sprintf("══ %s ══\n", resp))
+  cat("  Model A (yc):\n")
+  print(aic_A |> filter(response == resp) |> select(step, df, AIC, dAIC, BIC, dBIC),
+        row.names = FALSE)
+  cat(sprintf("    Best: %s\n\n",
+              (aic_A |> filter(response == resp))$step[which.min(
+                (aic_A |> filter(response == resp))$AIC)]))
+
+  cat("  Model B (length):\n")
+  print(aic_B |> filter(response == resp) |> select(step, df, AIC, dAIC, BIC, dBIC),
+        row.names = FALSE)
+  cat(sprintf("    Best: %s\n\n",
+              (aic_B |> filter(response == resp))$step[which.min(
+                (aic_B |> filter(response == resp))$AIC)]))
+}
+
+# Generic LRT function
+make_lrt <- function(mods, terms, response, model_name) {
+  mapply(function(r, f, term) {
+    lt <- anova(r, f)
+    data.frame(
+      model_type = model_name,
+      response   = response,
+      term_added = term,
+      chi2       = round(lt$Chisq[2], 3),
+      df         = lt$Df[2],
+      p_value    = round(lt$`Pr(>Chisq)`[2], 4),
+      sig        = case_when(
+        lt$`Pr(>Chisq)`[2] < 0.001 ~ "***",
+        lt$`Pr(>Chisq)`[2] < 0.01  ~ "**",
+        lt$`Pr(>Chisq)`[2] < 0.05  ~ "*",
+        lt$`Pr(>Chisq)`[2] < 0.1   ~ ".",
+        TRUE                        ~ "ns"
+      )
+    )
+  },
+  list(mods$m0, mods$m1, mods$m2),
+  list(mods$m1, mods$m2, mods$m3),
+  terms,
+  SIMPLIFY = FALSE) |> bind_rows()
+}
+
+lrt_A <- bind_rows(
+  make_lrt(modsA$b, c("section_coverage", "yc",     "diet"), "b*", "A: yc"),
+  make_lrt(modsA$L, c("section_coverage", "yc",     "diet"), "L*", "A: yc"),
+  make_lrt(modsA$a, c("section_coverage", "yc",     "diet"), "a*", "A: yc")
+)
+lrt_B <- bind_rows(
+  make_lrt(modsB$b, c("section_coverage", "length_mm", "diet"), "b*", "B: length"),
+  make_lrt(modsB$L, c("section_coverage", "length_mm", "diet"), "L*", "B: length"),
+  make_lrt(modsB$a, c("section_coverage", "length_mm", "diet"), "a*", "B: length")
+)
+
+for (resp in c("b*", "L*", "a*")) {
+  cat(sprintf("══ %s ══\n", resp))
+  cat("  Model A (yc):\n")
+  print(lrt_A |> filter(response == resp) |>
+          select(term_added, chi2, df, p_value, sig),
+        row.names = FALSE)
+  cat("  Model B (length):\n")
+  print(lrt_B |> filter(response == resp) |>
+          select(term_added, chi2, df, p_value, sig),
+        row.names = FALSE)
+  cat("\n")
+}
+
+# RUN COMPARISON BETWEEN TWO MODELS
+
+comparison <- bind_rows(lrt_A, lrt_B) |>
+  filter(term_added %in% c("yc", "length_mm")) |>
+  select(response, model_type, term_added, chi2, df, p_value, sig) |>
+  arrange(response, model_type)
+
+print(comparison, row.names = FALSE)
+
+# REML FINAL MODELS 
+
+# Model A — refit with REML
+full_A_b <- lmer(b         ~ section_coverage + yc + diet + (1|tank),
+                 data = df_modA, REML = TRUE, control = lmerControl(optimizer = "bobyqa"))
+full_A_L <- lmer(lightness ~ section_coverage             + (1|tank),
+                 data = df_modA, REML = TRUE, control = lmerControl(optimizer = "bobyqa"))
+full_A_a <- lmer(a         ~ section_coverage + yc + diet + (1|tank),
+                 data = df_modA, REML = TRUE, control = lmerControl(optimizer = "bobyqa"))
+
+# Model B — refit with REML
+full_B_b <- lmer(b         ~ section_coverage + length_scaled + diet + (1|tank),
+                 data = df_modB, REML = TRUE, control = lmerControl(optimizer = "bobyqa"))
+full_B_L <- lmer(lightness ~ section_coverage                        + (1|tank),
+                 data = df_modB, REML = TRUE, control = lmerControl(optimizer = "bobyqa"))
+full_B_a <- lmer(a         ~ section_coverage + length_scaled + diet + (1|tank),
+                 data = df_modB, REML = TRUE, control = lmerControl(optimizer = "bobyqa"))
+
+print_model <- function(mod, label) {
+  cat(sprintf("\n%s\n--- %s ---\n%s\n", strrep("-", 55), label, strrep("-", 55)))
+  print(summary(mod))
+  cat("\n  Random effects:\n")
+  print(as.data.frame(VarCorr(mod))[, c("grp", "var1", "vcov", "sdcor")],
+        row.names = FALSE)
+  if (length(fixef(mod)) > 2) {
+    cat("\n  VIF:\n")
+    print(round(car::vif(mod), 3))
+  }
+  r2 <- performance::r2(mod)
+  cat(sprintf("\n  R² marginal:    %.3f\n", r2$R2_marginal))
+  cat(sprintf("  R² conditional: %.3f\n\n", r2$R2_conditional))
+}
+
+for (lst in list(
+  list(full_A_b, "Model A — b* (yc)"),
+  list(full_B_b, "Model B — b* (length)"),
+  list(full_A_L, "Model A — L* (yc, section only)"),
+  list(full_B_L, "Model B — L* (length, section only)"),
+  list(full_A_a, "Model A — a* (yc)"),
+  list(full_B_a, "Model B — a* (length)")
+)) print_model(lst[[1]], lst[[2]])
+
+# COMPARISON TABLE
+
+r2_compare <- lapply(list(
+  list(full_A_b, "b*", "A: yc"),
+  list(full_B_b, "b*", "B: length"),
+  list(full_A_L, "L*", "A: yc"),
+  list(full_B_L, "L*", "B: length"),
+  list(full_A_a, "a*", "A: yc"),
+  list(full_B_a, "a*", "B: length")
+), function(x) {
+  r2 <- performance::r2(x[[1]])
+  data.frame(response = x[[2]], model = x[[3]],
+             R2_marginal    = round(r2$R2_marginal,    3),
+             R2_conditional = round(r2$R2_conditional, 3))
+}) |> bind_rows()
+
+print(r2_compare, row.names = FALSE)
+
+# MARGINAL EFFECT PLOT — length 
+
+pred_grid <- expand.grid(
+  length         = seq(min(df_modB$length), max(df_modB$length), length.out = 100),
+  section_coverage = factor("single", levels = levels(df_modB$section_coverage)),
+  diet             = factor("Mari",   levels = levels(df_modB$diet))
+) |>
+  mutate(length_scaled = (length - mean(df_modB$length)) / sd(df_modB$length))
+
+pred_df <- pred_grid |>
+  mutate(
+    b = predict(full_B_b, newdata = pred_grid, re.form = NA),
+    L = predict(full_B_L, newdata = pred_grid, re.form = NA),
+    a = predict(full_B_a, newdata = pred_grid, re.form = NA)
+  ) |>
+  pivot_longer(cols = c(b, L, a), names_to = "response", values_to = "predicted") |>
+  mutate(response = factor(response,
+                            levels = c("b", "L", "a"),
+                            labels = c("b*", "L*", "a*")))
+
+p_length_effect <- ggplot(pred_df,
+                          aes(x = length, y = predicted, colour = response)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~response, scales = "free_y", nrow = 1) +
+  scale_colour_manual(values = resp_cols, guide = "none") +
+  labs(x = "Shell length (mm)", y = "Predicted colour metric",
+       title    = "Marginal effect of shell length on lip colour (Model B)",
+       subtitle = "section_coverage = single, diet = Mari · population mean (re.form = NA)") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        strip.text       = element_text(size = 11, face = "bold"),
+        plot.title       = element_text(size = 13, face = "bold"),
+        plot.subtitle    = element_text(size = 9,  colour = "grey40"))
+
+print(p_length_effect)
+ggsave("plot_length_marginal_effect.png", p_length_effect,
+       width = 11, height = 4, dpi = 150)
+
+### Conclusion: yc is a better predictor of CIELAB metrics than length 
 
