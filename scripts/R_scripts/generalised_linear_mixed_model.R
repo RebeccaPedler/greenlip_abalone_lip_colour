@@ -3,7 +3,7 @@
 
 # Install packages and load libraries
 
-install.packages(c("tidyverse", "ggplot2", "patchwork", "scales", "vcd", "lme4", "lmerTest", "emmeans", "performance", "car"))
+install.packages(c("tidyverse", "ggplot2", "patchwork", "scales", "vcd", "lme4", "lmerTest", "emmeans", "performance", "car", "nlme"))
 
 library(tidyverse)
 library(ggplot2)
@@ -21,6 +21,7 @@ library(lmerTest)
 library(emmeans)
 library(performance)
 library(car)       
+library(nlme)
 
 ### LOAD & CLEAN DATA
 
@@ -39,7 +40,7 @@ df_raw <- df_raw |>
   filter(!is.na(farm))
 
 df_raw <- df_raw |> filter(!is.na(section_coverage)) # Delete NA
-df_raw <- df_raw |> filter(lightness != 0) # Delete zero
+df_raw <- df_raw |> filter(!(lightness == 0 & a == 0 & b == 0)) # Delete zero CIELAB rows
 df_raw <- df_raw |> filter(!is.na(length_mm)) # Delete NA
 
 # Correct data types
@@ -703,17 +704,13 @@ for (lst in list(list(full_b, "b*"),
                  list(full_a, "a*"))) {
   mod <- lst[[1]]; response <- lst[[2]]
   
-  emm <- emmeans(mod, specs = "section_coverage")
-  print(emm)
-  print(pairs(emm, adjust = "tukey"))
+  cat(sprintf("\n══════════════════════════════\n%s\n══════════════════════════════\n", response))
   
-  if (response != "L*") {
-    for (term in c("yc", "diet")) {
-    cat(sprintf("\n--- %s: section_coverage ---\n", response))
-    emm <- emmeans(mod, specs = "section_coverage")
+  for (term in c("section_coverage", "yc", "diet")) {
+    cat(sprintf("\n--- %s: %s ---\n", response, term))
+    emm <- emmeans(mod, specs = term)
     print(emm)
     print(pairs(emm, adjust = "tukey"))
-    }
   }
 }
 
@@ -877,6 +874,682 @@ diag_plots <- function(mod, response, filename) {
 diag_plots(full_b, "b*", "plot_10_diagnostics_b.png")
 diag_plots(full_L, "L*", "plot_11_diagnostics_L.png")
 diag_plots(full_a, "a*", "plot_12_diagnostics_a.png")
+
+### LMM assumption diagnostics — b*, L*, a*
+
+# SETUP 
+
+# Models to test — uses full_b, full_L, full_a from Script 03
+model_list <- list(
+  list(mod = full_b, label = "b*",        response = "b"),
+  list(mod = full_L, label = "L*",        response = "lightness"),
+  list(mod = full_a, label = "a*",        response = "a")
+)
+
+diag_cols <- c(
+  fitted   = "#2E6E9E",
+  loess    = "#E07B39",
+  qq_pt    = "#2E6E9E",
+  qq_line  = "#E07B39",
+  blup     = "#5B8FA8",
+  ref      = "grey50"
+)
+
+# HELPER: extract diagnostics 
+
+extract_diag <- function(mod) {
+  list(
+    fitted   = fitted(mod),
+    resid    = residuals(mod, type = "pearson"),    # Pearson residuals
+    resid_sc = residuals(mod, scaled = TRUE),       # internally scaled
+    blups    = ranef(mod)$tank[, 1],               # random intercepts (BLUPs)
+    groups   = levels(df_mod$tank)
+  )
+}
+
+# ASSUMPTION 1 & 3: Residuals vs Fitted (linearity + homoscedasticity) 
+
+plot_resid_fitted <- function(d, label) {
+  df_p <- data.frame(fitted = d$fitted, resid = d$resid)
+  ggplot(df_p, aes(x = fitted, y = resid)) +
+    geom_hline(yintercept = 0, linetype = "dashed",
+               colour = diag_cols["ref"], linewidth = 0.5) +
+    geom_point(alpha = 0.15, size = 0.7, colour = diag_cols["fitted"]) +
+    geom_smooth(method = "loess", se = TRUE, span = 0.6,
+                colour = diag_cols["loess"], fill = diag_cols["loess"],
+                alpha = 0.12, linewidth = 0.8) +
+    labs(
+      x     = "Fitted values",
+      y     = "Pearson residuals",
+      title = paste0("Residuals vs fitted — ", label),
+      subtitle = "Checks: linearity (flat loess), homoscedasticity (even spread)"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 12, face = "bold"),
+          plot.subtitle = element_text(size = 9,  colour = "grey40"))
+}
+
+# ASSUMPTION 2: QQ plot of residuals (normality) 
+
+plot_qq_resid <- function(d, label) {
+  df_p <- data.frame(resid = d$resid_sc)
+  ggplot(df_p, aes(sample = resid)) +
+    stat_qq(alpha = 0.2, size = 0.7, colour = diag_cols["qq_pt"]) +
+    stat_qq_line(colour = diag_cols["qq_line"], linewidth = 0.8) +
+    labs(
+      x     = "Theoretical quantiles",
+      y     = "Sample quantiles (scaled residuals)",
+      title = paste0("QQ plot — residuals — ", label),
+      subtitle = "Checks: normality of within-group residuals"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 12, face = "bold"),
+          plot.subtitle = element_text(size = 9,  colour = "grey40"))
+}
+
+# ASSUMPTION 3: Scale-location plot (homoscedasticity) 
+
+# sqrt(|residuals|) vs fitted 
+
+plot_scale_location <- function(d, label) {
+  df_p <- data.frame(
+    fitted   = d$fitted,
+    sqrt_abs = sqrt(abs(d$resid_sc))
+  )
+  ggplot(df_p, aes(x = fitted, y = sqrt_abs)) +
+    geom_point(alpha = 0.15, size = 0.7, colour = diag_cols["fitted"]) +
+    geom_smooth(method = "loess", se = TRUE, span = 0.6,
+                colour = diag_cols["loess"], fill = diag_cols["loess"],
+                alpha = 0.12, linewidth = 0.8) +
+    labs(
+      x     = "Fitted values",
+      y     = expression(sqrt("|Scaled residuals|")),
+      title = paste0("Scale-location — ", label),
+      subtitle = "Checks: homoscedasticity — loess should be approximately flat"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 12, face = "bold"),
+          plot.subtitle = element_text(size = 9,  colour = "grey40"))
+}
+
+# ASSUMPTION 3b: Residual variance by group (Levene's test) 
+
+levene_by_predictor <- function(mod, label) {
+  df_test <- df_mod |>
+    mutate(
+      resid_abs = abs(residuals(mod, type = "pearson"))
+    )
+
+  cat(sprintf("\n── Levene-type test (|residuals| ~ group) — %s ──\n", label))
+
+  for (grp in c("section_coverage", "yc", "diet")) {
+    f   <- as.formula(paste("resid_abs ~", grp))
+    fit <- lm(f, data = df_test)
+    fst <- summary(fit)$fstatistic
+    p   <- pf(fst[1], fst[2], fst[3], lower.tail = FALSE)
+    sig <- dplyr::case_when(p < 0.001 ~ "***", p < 0.01 ~ "**",
+                            p < 0.05 ~ "*",   p < 0.1  ~ ".",
+                            TRUE ~ "ns")
+    cat(sprintf("  %-20s  F(%.0f,%.0f) = %.3f   p = %.4f  %s\n",
+                grp, fst[2], fst[3], fst[1], p, sig))
+    if (p < 0.05) {
+      cat(sprintf("    Warning: residual variance differs across %s levels\n", grp))
+    }
+  }
+}
+
+# ASSUMPTION 4: QQ plot of BLUPs (normality of random effects)
+
+plot_qq_blups <- function(d, label) {
+  df_p <- data.frame(blup = d$blups)
+  ggplot(df_p, aes(sample = blup)) +
+    stat_qq(colour = diag_cols["blup"], size = 2.2, alpha = 0.85) +
+    stat_qq_line(colour = diag_cols["loess"], linewidth = 0.8) +
+    labs(
+      x     = "Theoretical quantiles",
+      y     = "Tank random intercepts (BLUPs)",
+      title = paste0("QQ plot — random effects (BLUPs) — ", label),
+      subtitle = paste0("n = ", length(d$blups), " tanks · Checks: normality of random intercepts")
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 12, face = "bold"),
+          plot.subtitle = element_text(size = 9,  colour = "grey40"))
+}
+
+# ASSUMPTION 4b: BLUPs vs fitted predictors (independence check)
+# BLUPs should show no systematic pattern against fixed effect predictors
+
+plot_blups_by_predictor <- function(mod, label) {
+  blup_df <- ranef(mod)$tank
+  blup_df$tank <- rownames(blup_df)
+  names(blup_df)[1] <- "blup"
+
+  tank_meta <- df_mod |>
+    distinct(tank, section_coverage, yc) |>
+    mutate(tank = as.character(tank))
+
+  blup_df <- left_join(blup_df, tank_meta, by = "tank")
+
+  p1 <- ggplot(blup_df, aes(x = section_coverage, y = blup, colour = section_coverage)) +
+    geom_boxplot(width = 0.4, outlier.size = 1.5, alpha = 0.7) +
+    geom_jitter(width = 0.1, alpha = 0.6, size = 1.5) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = diag_cols["ref"]) +
+    scale_colour_manual(values = c("single" = "#8DB4C8", "double" = "#2E6E9E"),
+                        guide = "none") +
+    labs(x = "Section coverage", y = "BLUP",
+         title = paste0("BLUPs by section — ", label)) +
+    theme_minimal(base_size = 10) +
+    theme(panel.grid.minor = element_blank())
+
+  p2 <- ggplot(blup_df, aes(x = yc, y = blup, colour = yc)) +
+    geom_boxplot(width = 0.4, outlier.size = 1.5, alpha = 0.7) +
+    geom_jitter(width = 0.1, alpha = 0.6, size = 1.5) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = diag_cols["ref"]) +
+    scale_colour_manual(values = c("21" = "#E07B39", "22" = "#5B8FA8"),
+                        guide = "none") +
+    labs(x = "Year class", y = "BLUP",
+         title = paste0("BLUPs by YC — ", label)) +
+    theme_minimal(base_size = 10) +
+    theme(panel.grid.minor = element_blank())
+
+  p1 | p2
+}
+
+# FORMAL TESTS: Shapiro-Wilk on residuals and BLUPs 
+# Note: at n=1265, Shapiro-Wilk is near-guaranteed to be significant.
+# Treat as a sensitivity check; weight QQ plots more heavily.
+
+formal_tests <- function(d, label) {
+  cat(sprintf("\n── Formal normality tests — %s ──\n", label))
+
+  # Residuals: sample up to 4999 (Shapiro-Wilk limit)
+  set.seed(42)
+  resid_sample <- sample(d$resid_sc, min(length(d$resid_sc), 4999))
+  sw_resid <- shapiro.test(resid_sample)
+  cat(sprintf("  Shapiro-Wilk residuals:      W = %.4f,  p = %.4f  %s\n",
+              sw_resid$statistic, sw_resid$p.value,
+              ifelse(sw_resid$p.value < 0.05,
+                     "(significant — inspect QQ plot for severity)",
+                     "(not significant)")))
+
+  # BLUPs: all tank-level intercepts (n=54, no sampling needed)
+  sw_blup <- shapiro.test(d$blups)
+  cat(sprintf("  Shapiro-Wilk BLUPs (n=%d): W = %.4f,  p = %.4f  %s\n",
+              length(d$blups), sw_blup$statistic, sw_blup$p.value,
+              ifelse(sw_blup$p.value < 0.05,
+                     "(significant — inspect BLUP QQ plot)",
+                     "(not significant)")))
+
+  # Kolmogorov-Smirnov as a complementary test on full residual vector
+  ks <- ks.test(d$resid_sc, "pnorm",
+                mean(d$resid_sc), sd(d$resid_sc))
+  cat(sprintf("  Kolmogorov-Smirnov residuals: D = %.4f,  p = %.4f  %s\n",
+              ks$statistic, ks$p.value,
+              ifelse(ks$p.value < 0.05,
+                     "(significant)", "(not significant)")))
+
+  cat("  Note: Shapiro-Wilk has very high power at n=1265 — a significant result\n")
+  cat("  does not necessarily indicate a practically important departure from normality.\n")
+  cat("  Base decisions on QQ plots and residual plots, not p-values alone.\n")
+}
+
+# ASSUMPTION 5: Independence — BLUPs vs fixed predictors (Kruskal-Wallis) ───
+# BLUPs should be unrelated to the fixed effect predictors at tank level
+
+independence_test <- function(mod, label) {
+  blup_df <- ranef(mod)$tank
+  blup_df$tank <- rownames(blup_df)
+  names(blup_df)[1] <- "blup"
+
+  tank_meta <- df_mod |>
+    distinct(tank, section_coverage, yc, diet) |>
+    mutate(tank = as.character(tank))
+
+  blup_df <- left_join(blup_df, tank_meta, by = "tank")
+
+  cat(sprintf("\n── BLUP independence tests — %s ──\n", label))
+  cat("  (Kruskal-Wallis: BLUPs should not systematically vary by fixed-effect grouping)\n")
+
+  for (grp in c("section_coverage", "yc", "diet")) {
+    kw <- kruskal.test(blup ~ .data[[grp]], data = blup_df)
+    sig <- dplyr::case_when(
+      kw$p.value < 0.001 ~ "*** (BLUPs differ by group — potential issue)",
+      kw$p.value < 0.05  ~ "* (mild pattern in BLUPs)",
+      TRUE               ~ "ns (BLUPs independent of group)"
+    )
+    cat(sprintf("  %-20s  chi2 = %.3f, df = %.0f,  p = %.4f  %s\n",
+                grp, kw$statistic, kw$df, kw$p.value, sig))
+  }
+}
+
+# ASSUMPTION 6: Within-tank autocorrelation check 
+
+autocorrelation_check <- function(mod, label) {
+  cat(sprintf("\n── Within-tank residual correlation — %s ──\n", label))
+
+  resid_df <- data.frame(
+    tank  = df_mod$tank,
+    resid = residuals(mod, type = "pearson")
+  )
+
+  # Mean within-tank residual correlation (should be ~0 if random effect absorbed clustering)
+  tank_cors <- resid_df |>
+    group_by(tank) |>
+    summarise(n = n(), .groups = "drop") |>
+    filter(n >= 3)  # need >=3 obs to compute correlation
+
+  # Compute average absolute correlation between pairs within each tank
+  # as a rough intraclass check on residuals
+  resid_icc <- resid_df |>
+    group_by(tank) |>
+    summarise(
+      var_tank = var(resid),
+      n        = n(),
+      .groups  = "drop"
+    )
+
+  overall_resid_var <- var(resid_df$resid)
+  mean_within_var   <- mean(resid_icc$var_tank)
+  resid_icc_approx  <- 1 - (mean_within_var / overall_resid_var)
+
+  cat(sprintf("  Approximate residual ICC after conditioning on fixed effects: %.3f\n",
+              max(0, resid_icc_approx)))
+  cat("  Interpretation: value near 0 indicates random effect adequately accounts for\n")
+  cat("  within-tank clustering. Value >> 0 suggests remaining autocorrelation.\n")
+}
+
+# COMBINED SUMMARY 
+assumption_summary <- function(mod, label, d) {
+  cat(sprintf("\n%s\n ASSUMPTION SUMMARY: %s\n%s\n",
+              strrep("=", 55), label, strrep("=", 55)))
+
+  resid_range <- range(d$resid_sc)
+  blup_sw     <- shapiro.test(d$blups)
+  set.seed(42)
+  resid_sw    <- shapiro.test(sample(d$resid_sc, min(length(d$resid_sc), 4999)))
+
+  checks <- list(
+    list(
+      name   = "1. Linearity",
+      method = "Residuals vs fitted — inspect loess trend",
+      result = "Visual check required — see plot_01_assump_resfit_*.png"
+    ),
+    list(
+      name   = "2. Residual normality",
+      method = sprintf("Shapiro-Wilk W = %.4f, p = %.4f", resid_sw$statistic, resid_sw$p.value),
+      result = ifelse(abs(resid_range[1]) > 3.5 | abs(resid_range[2]) > 3.5,
+                      sprintf("Tails extend to [%.2f, %.2f] — inspect QQ plot", resid_range[1], resid_range[2]),
+                      "Scaled residual range acceptable — verify on QQ plot")
+    ),
+    list(
+      name   = "3. Homoscedasticity",
+      method = "Scale-location plot + Levene-type test by group",
+      result = "Visual check required — see plot_02_assump_scaleloc_*.png"
+    ),
+    list(
+      name   = "4. BLUP normality",
+      method = sprintf("Shapiro-Wilk W = %.4f, p = %.4f (n = %d tanks)",
+                       blup_sw$statistic, blup_sw$p.value, length(d$blups)),
+      result = ifelse(blup_sw$p.value < 0.05,
+                      "Significant — inspect BLUP QQ plot for severity",
+                      "Not significant — random effects plausibly normal")
+    ),
+    list(
+      name   = "5. BLUP independence",
+      method = "Kruskal-Wallis: BLUPs by section, YC, diet",
+      result = "See console output above"
+    ),
+    list(
+      name   = "6. Within-group independence",
+      method = "Design assumption + residual ICC check",
+      result = "See residual ICC above; cannot be fully tested from data alone"
+    )
+  )
+
+  for (chk in checks) {
+    cat(sprintf("\n  %s\n  Method: %s\n  Result: %s\n",
+                chk$name, chk$method, chk$result))
+  }
+}
+
+# RUN ALL DIAGNOSTICS 
+
+### Print and save all assumption plots — L*, a*, b*
+
+for (item in model_list) {
+  mod   <- item$mod
+  label <- item$label
+  resp  <- item$response
+
+  d <- extract_diag(mod)
+
+  # Build all five plots
+  p1 <- plot_resid_fitted(d, label)
+  p2 <- plot_qq_resid(d, label)
+  p3 <- plot_scale_location(d, label)
+  p4 <- plot_qq_blups(d, label)
+  p5 <- plot_blups_by_predictor(mod, label)
+
+  # Panel 1: residual diagnostics (assumptions 1, 2, 3) 
+   resid_panel <- (p1 | p2 | p3) +
+    plot_annotation(
+      title    = paste0("Residual diagnostics — ", label),
+      subtitle = "Left: linearity/homoscedasticity  |  Centre: residual normality  |  Right: scale-location",
+      theme    = theme(
+        plot.title    = element_text(size = 13, face = "bold"),
+        plot.subtitle = element_text(size = 9,  colour = "grey40")
+      )
+    )
+
+  # Panel 2: BLUP diagnostics (assumptions 4, 5) 
+  blup_panel <- (p4 / p5) +
+    plot_annotation(
+      title    = paste0("Random effect diagnostics — ", label),
+      subtitle = "Top: BLUP normality  |  Bottom: BLUPs by fixed-effect group",
+      theme    = theme(
+        plot.title    = element_text(size = 13, face = "bold"),
+        plot.subtitle = element_text(size = 9,  colour = "grey40")
+      )
+    )
+
+  # Print to screen 
+  print(resid_panel)
+  print(blup_panel)
+
+  # Save to disk 
+  ggsave(sprintf("plot_assump_01_residuals_%s.png", resp),
+         resid_panel, width = 13, height = 4.5, dpi = 150)
+  ggsave(sprintf("plot_assump_02_blups_%s.png", resp),
+         blup_panel,  width = 10, height = 8,   dpi = 150)
+
+  cat(sprintf("Printed and saved diagnostics for %s\n", label))
+}
+
+### Build and store all assumption plots — b*, L*, a*
+
+plot_store <- list()
+
+for (item in model_list) {
+  mod   <- item$mod
+  label <- item$label
+  resp  <- item$response
+
+  d <- extract_diag(mod)
+
+  plot_store[[resp]] <- list(
+    resid_fitted   = plot_resid_fitted(d, label),
+    qq_resid       = plot_qq_resid(d, label),
+    scale_location = plot_scale_location(d, label),
+    qq_blups       = plot_qq_blups(d, label),
+    blups_by_pred  = plot_blups_by_predictor(mod, label)
+  )
+}
+
+# L*
+plot_store[["lightness"]]$resid_fitted
+plot_store[["lightness"]]$qq_resid
+plot_store[["lightness"]]$scale_location
+plot_store[["lightness"]]$qq_blups
+plot_store[["lightness"]]$blups_by_pred
+
+# a* 
+plot_store[["a"]]$resid_fitted
+plot_store[["a"]]$qq_resid
+plot_store[["a"]]$scale_location
+plot_store[["a"]]$qq_blups
+plot_store[["a"]]$blups_by_pred
+
+# b* 
+plot_store[["b"]]$resid_fitted
+plot_store[["b"]]$qq_resid
+plot_store[["b"]]$scale_location
+plot_store[["b"]]$qq_blups
+plot_store[["b"]]$blups_by_pred
+
+# Formal tests 
+  formal_tests(d, label)
+  levene_by_predictor(mod, label)
+  independence_test(mod, label)
+  autocorrelation_check(mod, label)
+  assumption_summary(mod, label, d)
+}
+
+### Script 03b: Final models — varPower weighted LMM (b*, L*, a*)
+### Replaces the REML final model block in Script 03
+### Requires: df_mod from Script 03 (section ref=single, yc ref=22, diet ref=Pink)
+
+
+### FIT WEIGHTED MODELS (REML)
+
+full_b_weighted <- lme(
+  b ~ section_coverage + yc + diet,
+  random  = ~ 1 | tank,
+  weights = varPower(form = ~ fitted(.)),
+  data    = df_mod,
+  method  = "REML"
+)
+
+full_L_weighted <- lme(
+  lightness ~ section_coverage + yc + diet,
+  random  = ~ 1 | tank,
+  weights = varPower(form = ~ fitted(.)),
+  data    = df_mod,
+  method  = "REML"
+)
+
+full_a_weighted <- lme(
+  a ~ section_coverage + yc + diet,
+  random  = ~ 1 | tank,
+  weights = varPower(form = ~ fitted(.)),
+  data    = df_mod,
+  method  = "REML"
+)
+
+### LRT to CONFIRM WEIGHTED IS BETTER (ML for comparison)
+
+# Unweighted equivalents (ML) for LRT
+full_b_nlme_ML <- lme(b ~ section_coverage + yc + diet,
+                      random = ~ 1 | tank, data = df_mod, method = "ML")
+full_L_nlme_ML <- lme(lightness ~ section_coverage + yc + diet,
+                      random = ~ 1 | tank, data = df_mod, method = "ML")
+full_a_nlme_ML <- lme(a ~ section_coverage + yc + diet,
+                      random = ~ 1 | tank, data = df_mod, method = "ML")
+
+# Weighted equivalents (ML) for LRT
+full_b_weighted_ML <- update(full_b_weighted, method = "ML")
+full_L_weighted_ML <- update(full_L_weighted, method = "ML")
+full_a_weighted_ML <- update(full_a_weighted, method = "ML")
+
+cat("\n── LRT: weighted vs unweighted ──────────────────────────────\n")
+cat("b*:\n");        print(anova(full_b_nlme_ML, full_b_weighted_ML))
+cat("L*:\n");        print(anova(full_L_nlme_ML, full_L_weighted_ML))
+cat("a*:\n");        print(anova(full_a_nlme_ML, full_a_weighted_ML))
+
+### PRINT FULL SUMMARIES (REML models) 
+
+for (lst in list(
+  list(full_b_weighted, "b*  — weighted"),
+  list(full_L_weighted, "L*  — weighted"),
+  list(full_a_weighted, "a*  — weighted")
+)) {
+  mod   <- lst[[1]]
+  label <- lst[[2]]
+
+  cat(sprintf("\n%s\n─── %s ───\n%s\n",
+              strrep("─", 58), label, strrep("─", 58)))
+
+  print(summary(mod))
+
+  # Random effects and variance function parameter
+  cat("\n  Random effects:\n")
+  print(VarCorr(mod))
+
+  cat("\n  Variance function (varPower delta):\n")
+  print(coef(mod$modelStruct$varStruct, unconstrained = FALSE))
+
+  # VIF (requires car; convert to lm for VIF only — approximate)
+  cat("\n  VIF (approximate via fixed-effect structure):\n")
+  vif_mod <- lm(formula(mod)[-3],   # strip random part for VIF
+                data = df_mod)
+  tryCatch(print(round(car::vif(vif_mod), 3)),
+           error = function(e) cat("  VIF not computable\n"))
+
+  # Nakagawa R² via performance (works with nlme lme objects)
+  r2 <- performance::r2(mod)
+  cat(sprintf("\n  R² marginal:    %.3f\n", r2$R2_marginal))
+  cat(sprintf("  R² conditional: %.3f\n\n", r2$R2_conditional))
+}
+
+### COEFFICIENT COMPARISON TABLE — weighted vs unweighted 
+
+# Unweighted REML equivalents (using lme for direct comparison)
+full_b_uw <- lme(b ~ section_coverage + yc + diet,
+                 random = ~ 1 | tank, data = df_mod, method = "REML")
+full_L_uw <- lme(lightness ~ section_coverage + yc + diet,
+                 random = ~ 1 | tank, data = df_mod, method = "REML")
+full_a_uw <- lme(a ~ section_coverage + yc + diet,
+                 random = ~ 1 | tank, data = df_mod, method = "REML")
+
+compare_coefs <- function(mod_uw, mod_w, response) {
+  get_coef <- function(mod) {
+    s    <- summary(mod)$tTable
+    df_c <- as.data.frame(s)
+    df_c$term <- rownames(df_c)
+    df_c |>
+      dplyr::filter(term != "(Intercept)") |>
+      dplyr::transmute(
+        term,
+        estimate = round(Value,         3),
+        se       = round(`Std.Error`,   3),
+        p        = round(`p-value`,     4),
+        sig      = dplyr::case_when(
+          `p-value` < 0.001 ~ "***",
+          `p-value` < 0.01  ~ "**",
+          `p-value` < 0.05  ~ "*",
+          `p-value` < 0.1   ~ ".",
+          TRUE              ~ "ns"
+        )
+      )
+  }
+
+  uw <- get_coef(mod_uw) |> dplyr::rename(se_uw=se, p_uw=p, sig_uw=sig)
+  w  <- get_coef(mod_w)  |> dplyr::rename(se_w=se,  p_w=p,  sig_w=sig)
+
+  merged <- dplyr::left_join(uw, w, by = c("term","estimate")) |>
+    dplyr::mutate(
+      se_pct_change = round((se_w - se_uw) / se_uw * 100, 1),
+      sig_changed   = sig_uw != sig_w
+    )
+
+  cat(sprintf("\n══ %s ══════════════════════════════════════════════════\n",
+              response))
+  cat(sprintf("  %-30s %7s | %6s %8s %4s | %6s %8s %4s | %7s %s\n",
+              "Term", "Est",
+              "UW SE", "UW p", "Sig",
+              "W SE",  "W p",  "Sig",
+              "SE %chg", "Changed?"))
+  cat(sprintf("  %s\n", strrep("─", 90)))
+
+  for (i in seq_len(nrow(merged))) {
+    r      <- merged[i, ]
+    chg    <- if (r$sig_changed) " ◄ SIG CHANGE" else ""
+    cat(sprintf("  %-30s %7.3f | %6.3f %8.4f %4s | %6.3f %8.4f %4s | %+6.1f%%  %s\n",
+                r$term, r$estimate,
+                r$se_uw, r$p_uw, r$sig_uw,
+                r$se_w,  r$p_w,  r$sig_w,
+                r$se_pct_change, chg))
+  }
+}
+
+compare_coefs(full_b_uw, full_b_weighted, "b*")
+compare_coefs(full_L_uw, full_L_weighted, "L*")
+compare_coefs(full_a_uw, full_a_weighted, "a*")
+
+### EMMs FROM WEIGHTED MODELS
+
+cat("\n\n── Estimated Marginal Means — weighted models ───────────────\n")
+
+for (lst in list(
+  list(full_b_weighted, "b*"),
+  list(full_L_weighted, "L*"),
+  list(full_a_weighted, "a*")
+)) {
+  mod      <- lst[[1]]
+  response <- lst[[2]]
+
+  cat(sprintf("\n══════════════════════════════\n%s\n══════════════════════════════\n",
+              response))
+
+  for (term in c("section_coverage", "yc", "diet")) {
+    cat(sprintf("\n─── %s: %s ───\n", response, term))
+    emm <- emmeans::emmeans(mod, specs = term)
+    print(emm)
+    print(pairs(emm, adjust = "tukey"))
+  }
+}
+
+### DIAGNOSTIC PLOTS — WEIGHTED MODELS
+
+diag_weighted <- function(mod, response, filename_prefix) {
+  df_d <- data.frame(
+    fitted = fitted(mod),
+    resid  = residuals(mod, type = "pearson")
+  )
+
+  p_rv <- ggplot(df_d, aes(x = fitted, y = resid)) +
+    geom_point(alpha = 0.2, size = 0.7, colour = "#2E6E9E") +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+    geom_smooth(method = "loess", se = FALSE,
+                colour = "#E07B39", linewidth = 0.8) +
+    labs(x = "Fitted", y = "Pearson residuals",
+         title    = paste0("Residuals vs fitted — ", response, " (weighted)"),
+         subtitle = "Pearson residuals should now show even spread") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank())
+
+  p_qq <- ggplot(df_d, aes(sample = resid)) +
+    stat_qq(alpha = 0.25, size = 0.7, colour = "#2E6E9E") +
+    stat_qq_line(colour = "#E07B39", linewidth = 0.8) +
+    labs(title    = paste0("QQ plot — ", response, " (weighted)"),
+         x = "Theoretical quantiles", y = "Sample quantiles") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank())
+
+  p_sl <- ggplot(df_d, aes(x = fitted, y = sqrt(abs(resid)))) +
+    geom_point(alpha = 0.2, size = 0.7, colour = "#2E6E9E") +
+    geom_smooth(method = "loess", se = FALSE,
+                colour = "#E07B39", linewidth = 0.8) +
+    labs(x = "Fitted", y = expression(sqrt("|Pearson residuals|")),
+         title    = paste0("Scale-location — ", response, " (weighted)"),
+         subtitle = "Loess should now be flat if varPower correction worked") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank())
+
+  panel <- (p_rv | p_qq | p_sl) +
+    plot_annotation(
+      title    = paste0("Weighted model diagnostics — ", response),
+      theme    = theme(plot.title = element_text(size = 13, face = "bold"))
+    )
+
+  print(panel)
+  ggsave(paste0(filename_prefix, "_", response, ".png"),
+         panel, width = 13, height = 4.5, dpi = 150)
+
+  # Shapiro-Wilk on Pearson residuals
+  set.seed(42)
+  sw <- shapiro.test(sample(residuals(mod, type = "pearson"),
+                            min(length(residuals(mod)), 4999)))
+  cat(sprintf("  Shapiro-Wilk Pearson residuals (%s weighted): W=%.4f, p=%.4f\n",
+              response, sw$statistic, sw$p.value))
+}
+
+diag_weighted(full_b_weighted, "b*", "plot_weighted_diag")
+diag_weighted(full_L_weighted, "L*", "plot_weighted_diag")
+diag_weighted(full_a_weighted, "a*", "plot_weighted_diag")
 
 ### Script 04: Sensitivity test to substantiate dietary affect
 
@@ -1042,7 +1715,7 @@ print(coef_compare_a, row.names = FALSE)
 ### Script 05: Size metrics — collinearity with YC + LMM comparison (yc vs length)
 
 # Are size metrics (length, width, area) correlated with each other?
-# Does length_mm perform better than yc as a predictor of lip colour?
+# Does length perform better than yc as a predictor of lip colour?
 
 # Prepare data
 
@@ -1147,8 +1820,8 @@ df_modA <- df |>
     yc               = factor(yc,               ordered = FALSE),
     diet             = factor(diet),
     section_coverage = relevel(section_coverage, ref = "single"),
-    yc               = relevel(yc,               ref = "21"),
-    diet             = relevel(diet,             ref = "Mari")
+    yc               = relevel(yc,               ref = "22"),
+    diet             = relevel(diet,             ref = "Pink")
   )
 
 # Model B dataset: includes length (must also have size data)
@@ -1160,7 +1833,7 @@ df_modB <- df |>
     section_coverage = factor(section_coverage, ordered = FALSE),
     diet             = factor(diet),
     section_coverage = relevel(section_coverage, ref = "single"),
-    diet             = relevel(diet,             ref = "Mari"),
+    diet             = relevel(diet,             ref = "Pink"),
     length_scaled    = scale(length)[, 1]   # z-score: 1 unit = 1 SD (~14mm)
   )
 
@@ -1294,9 +1967,9 @@ lrt_A <- bind_rows(
   make_lrt(modsA$a, c("section_coverage", "yc",     "diet"), "a*", "A: yc")
 )
 lrt_B <- bind_rows(
-  make_lrt(modsB$b, c("section_coverage", "length_mm", "diet"), "b*", "B: length"),
-  make_lrt(modsB$L, c("section_coverage", "length_mm", "diet"), "L*", "B: length"),
-  make_lrt(modsB$a, c("section_coverage", "length_mm", "diet"), "a*", "B: length")
+  make_lrt(modsB$b, c("section_coverage", "length_scaled", "diet"), "b*", "B: length"),
+  make_lrt(modsB$L, c("section_coverage", "length_scaled", "diet"), "L*", "B: length"),
+  make_lrt(modsB$a, c("section_coverage", "length_scaled", "diet"), "a*", "B: length")
 )
 
 for (resp in c("b*", "L*", "a*")) {
@@ -1315,7 +1988,7 @@ for (resp in c("b*", "L*", "a*")) {
 # RUN COMPARISON BETWEEN TWO MODELS
 
 comparison <- bind_rows(lrt_A, lrt_B) |>
-  filter(term_added %in% c("yc", "length_mm")) |>
+  filter(term_added %in% c("yc", "length_scaled")) |>
   select(response, model_type, term_added, chi2, df, p_value, sig) |>
   arrange(response, model_type)
 
