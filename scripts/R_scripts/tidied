@@ -805,3 +805,168 @@ p_emm_yc   <- emm_plot(emm_yc,   "Year class",       "EMM: year class")
 
 print(p_emm_sec)
 print(p_emm_yc)
+
+### Script 06: Simplified LMM diagnostics — b*, L*, a*, chroma
+
+# MODEL LIST 
+model_list <- list(
+  list(mod = full_b,      label = "b*",     response = "b"),
+  list(mod = full_L,      label = "L*",     response = "lightness"),
+  list(mod = full_a,      label = "a*",     response = "a"),
+  list(mod = full_chroma, label = "Chroma", response = "chroma")
+)
+
+# DIAGNOSTIC FUNCTION 
+
+run_diagnostics <- function(mod, label, resp, data = df_mod) {
+
+  fitted_vals <- fitted(mod)
+  resid_raw   <- residuals(mod, type = "pearson")
+  resid_sc    <- scale(resid_raw)[, 1]
+  blups       <- ranef(mod)$tank[, 1]
+
+  # Shapiro-Wilk on residuals
+  set.seed(42)
+  sw_r <- shapiro.test(sample(resid_sc, min(length(resid_sc), 4999)))
+
+  # Shapiro-Wilk on BLUPs
+  sw_b <- shapiro.test(blups)
+
+  # Levene-type test
+  df_test <- data |> mutate(resid_abs = abs(resid_raw))
+
+  for (grp in c("section_coverage", "yc")) {
+    fit <- lm(as.formula(paste("resid_abs ~", grp)), data = df_test)
+    fst <- summary(fit)$fstatistic
+    p   <- pf(fst[1], fst[2], fst[3], lower.tail = FALSE)
+    sig <- case_when(p < 0.001 ~ "***", p < 0.01 ~ "**",
+                     p < 0.05  ~ "*",   p < 0.1  ~ ".",
+                     TRUE ~ "ns")
+  }
+
+  # Kruskal-Wallis: BLUP independence
+  blup_df <- data.frame(blup = blups,
+                        tank = rownames(ranef(mod)$tank)) |>
+    left_join(
+      data |> distinct(tank, section_coverage, yc) |>
+              mutate(tank = as.character(tank)),
+      by = "tank")
+
+  for (grp in c("section_coverage", "yc")) {
+    kw  <- kruskal.test(as.formula(paste("blup ~", grp)), data = blup_df)
+    sig <- case_when(kw$p.value < 0.001 ~ "***",
+                     kw$p.value < 0.05  ~ "*",
+                     TRUE               ~ "ns")
+  }
+
+  # Residual ICC — FIX: definition was broken by an inline comment
+  resid_df    <- data.frame(tank = data$tank, resid = resid_raw)
+  overall_var <- var(resid_df$resid)
+  mean_within <- resid_df |>
+                   group_by(tank) |>
+                   summarise(v = var(resid), .groups = "drop") |>
+                   pull(v) |> mean()
+  resid_icc   <- max(0, 1 - mean_within / overall_var)
+
+# Shapiro-Wilk on residuals
+  set.seed(42)
+  sw_r <- shapiro.test(sample(resid_sc, min(length(resid_sc), 4999)))
+  cat(sprintf("  SW residuals:  W = %.4f, p = %.4f\n", sw_r$statistic, sw_r$p.value))
+
+  # Shapiro-Wilk on BLUPs
+  sw_b <- shapiro.test(blups)
+  cat(sprintf("  SW BLUPs:      W = %.4f, p = %.4f\n", sw_b$statistic, sw_b$p.value))
+
+  # Levene-type test
+  df_test <- data |> mutate(resid_abs = abs(resid_raw))
+  for (grp in c("section_coverage", "yc")) {
+    fit <- lm(as.formula(paste("resid_abs ~", grp)), data = df_test)
+    fst <- summary(fit)$fstatistic
+    p   <- pf(fst[1], fst[2], fst[3], lower.tail = FALSE)
+    sig <- case_when(p < 0.001 ~ "***", p < 0.01 ~ "**",
+                     p < 0.05  ~ "*",   p < 0.1  ~ ".", TRUE ~ "ns")
+    cat(sprintf("  Levene %-20s F = %.3f, p = %.4f %s\n", grp, fst[1], p, sig))
+  }
+
+  # Kruskal-Wallis
+  for (grp in c("section_coverage", "yc")) {
+    kw  <- kruskal.test(as.formula(paste("blup ~", grp)), data = blup_df)
+    sig <- case_when(kw$p.value < 0.001 ~ "***", kw$p.value < 0.05 ~ "*", TRUE ~ "ns")
+    cat(sprintf("  KW BLUP %-20s chi2 = %.3f, p = %.4f %s\n", grp, kw$statistic, kw$p.value, sig))
+  }
+
+  # Residual ICC
+  cat(sprintf("  Residual ICC:  %.4f\n", resid_icc))
+
+  # PLOTS
+  df_p <- data.frame(fitted = fitted_vals,
+                     resid  = resid_raw,
+                     sq_abs = sqrt(abs(resid_sc)))
+
+  p1 <- ggplot(df_p, aes(x = fitted, y = resid)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_point(alpha = 0.15, size = 0.7, colour = "#2E6E9E") +
+    geom_smooth(method = "loess", se = TRUE, span = 0.6,
+                colour = "#E07B39", fill = "#E07B39",
+                alpha = 0.12, linewidth = 0.8) +
+    labs(x = "Fitted", y = "Pearson residuals",
+         title = paste0("Residuals vs fitted — ", label),
+         subtitle = "Linearity + homoscedasticity: loess should be flat, spread even") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 11, face = "bold"),
+          plot.subtitle = element_text(size = 8, colour = "grey40"))
+
+  p2 <- ggplot(data.frame(r = resid_sc), aes(sample = r)) +
+    stat_qq(alpha = 0.2, size = 0.7, colour = "#2E6E9E") +
+    stat_qq_line(colour = "#E07B39", linewidth = 0.8) +
+    labs(x = "Theoretical quantiles", y = "Scaled residuals",
+         title = paste0("QQ plot — ", label),
+         subtitle = "Normality: points should follow the line") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 11, face = "bold"),
+          plot.subtitle = element_text(size = 8, colour = "grey40"))
+
+  p3 <- ggplot(df_p, aes(x = fitted, y = sq_abs)) +
+    geom_point(alpha = 0.15, size = 0.7, colour = "#2E6E9E") +
+    geom_smooth(method = "loess", se = TRUE, span = 0.6,
+                colour = "#E07B39", fill = "#E07B39",
+                alpha = 0.12, linewidth = 0.8) +
+    labs(x = "Fitted", y = expression(sqrt("|Scaled residuals|")),
+         title = paste0("Scale-location — ", label),
+         subtitle = "Homoscedasticity: loess should be flat") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 11, face = "bold"),
+          plot.subtitle = element_text(size = 8, colour = "grey40"))
+
+  p4 <- ggplot(data.frame(b = blups), aes(sample = b)) +
+    stat_qq(colour = "#5B8FA8", size = 2, alpha = 0.85) +
+    stat_qq_line(colour = "#E07B39", linewidth = 0.8) +
+    labs(x = "Theoretical quantiles", y = "BLUPs",
+         title = paste0("BLUP QQ — ", label),
+         subtitle = paste0("n = ", length(blups), " tanks")) +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 11, face = "bold"),
+          plot.subtitle = element_text(size = 8, colour = "grey40"))
+
+  panel <- (p1 | p2 | p3 | p4) +
+    plot_annotation(
+      title = paste0("Diagnostic plots — ", label),
+      theme = theme(plot.title = element_text(size = 13, face = "bold"))
+    )
+
+  print(panel)
+  ggsave(sprintf("plot_diagnostics_%s.png", resp),
+         panel, width = 16, height = 4, dpi = 150)
+  cat(sprintf("\n  Saved: plot_diagnostics_%s.png\n", resp))
+
+} 
+
+# RUN FOR ALL MODELS 
+run_diagnostics(mod = full_L, label = "L*", resp = "L")
+run_diagnostics(mod = full_a, label = "a*", resp = "a")
+run_diagnostics(mod = full_b, label = "b*", resp = "b")
+run_diagnostics(mod = full_chroma, label = "chroma*", resp = "chroma")
