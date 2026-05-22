@@ -115,7 +115,7 @@ flag_outliers <- function(data, var) {
     ) |>
     ungroup() |>
     filter(outlier) |>
-    dplyr::select(image_id, tank, diet, yc, all_of(var), z_within)
+    dplyr::select(image_id, tank, diet_code, yc, all_of(var), z_within)
 }
 
 for (var in c("lightness", "a", "b")) {
@@ -492,7 +492,7 @@ CIELAB_correlation_p <- ggcorrplot(cor_r,
                 ggtheme    = theme_minimal(base_size = 13))
  
 print(CIELAB_correlation_p)
-ggsave("plot_Lab_correlation_matrix.png", p, width = 5, height = 5, dpi = 150)
+ggsave("plot_Lab_correlation_matrix.png", CIELAB_correlation_p, width = 5, height = 5, dpi = 150)
 
 ### Script 03: Linear Mixed Models — b*, L*, a* ~ section_coverage + yc + diet
 
@@ -514,13 +514,13 @@ df_mod <- df |>
 # NULL MODELS & ICC 
 # Fit intercept-only models (REML) to estimate ICC before any fixed effects
 
-null_b <- lmer(b ~ 1 + (1 | farm/tank), data = df_mod, REML = TRUE,
+null_b <- lmer(b ~ 1 + (1 | tank), data = df_mod, REML = TRUE,
                control = lmerControl(optimizer = "bobyqa"))
-null_L <- lmer(lightness ~ 1 + (1 | farm/tank), data = df_mod, REML = TRUE,
+null_L <- lmer(lightness ~ 1 + (1 | tank), data = df_mod, REML = TRUE,
                control = lmerControl(optimizer = "bobyqa"))
-null_a <- lmer(a ~ 1 + (1 | farm/tank), data = df_mod, REML = TRUE,
+null_a <- lmer(a ~ 1 + (1 | tank), data = df_mod, REML = TRUE,
                control = lmerControl(optimizer = "bobyqa"))
-null_chroma <- lmer(chroma ~ 1 + (1 | farm/tank), data = df_mod, REML = TRUE,
+null_chroma <- lmer(chroma ~ 1 + (1 | tank), data = df_mod, REML = TRUE,
                control = lmerControl(optimizer = "bobyqa"))
 
 icc_table <- data.frame(
@@ -535,7 +535,7 @@ print(icc_table, row.names = FALSE)
 
 ## FORWARD SELECTION: FIT ALL MODEL COMBINATIONS AND COMPARE
 
-# Order: null → + section_coverage → + yc → + diet (in order of hypothetic importance)
+# Order: null → + section_coverage → + yc (in order of hypothetic importance)
 
 fit_steps <- function(response, data = df_mod) {
   f0  <- as.formula(paste(response, "~ 1                                   + (1 | tank)"))
@@ -806,7 +806,7 @@ p_emm_yc   <- emm_plot(emm_yc,   "Year class",       "EMM: year class")
 print(p_emm_sec)
 print(p_emm_yc)
 
-### Script 06: Simplified LMM diagnostics — b*, L*, a*, chroma
+### Script 04: LMM diagnostics — b*, L*, a*, chroma
 
 # MODEL LIST 
 model_list <- list(
@@ -970,3 +970,324 @@ run_diagnostics(mod = full_L, label = "L*", resp = "L")
 run_diagnostics(mod = full_a, label = "a*", resp = "a")
 run_diagnostics(mod = full_b, label = "b*", resp = "b")
 run_diagnostics(mod = full_chroma, label = "chroma*", resp = "chroma")
+
+# Script 05: Weighted LME models (varIdent) 
+
+## FIT WEIGHTED MODELS USING VARiIDENT
+#    varIdent(form = ~1|section_coverage) - most heterogeneous
+
+ctrl <- lmeControl(opt = "optim", maxIter = 200, msMaxIter = 200)
+
+weighted_b <- lme(
+  b              ~ section_coverage + yc,
+  random         = ~ 1 | tank,
+  weights        = varIdent(form = ~ 1 | section_coverage),
+  data           = df_mod,
+  method         = "REML",
+  control        = ctrl
+)
+
+weighted_L <- lme(
+  lightness      ~ section_coverage + yc,
+  random         = ~ 1 | tank,
+  weights        = varIdent(form = ~ 1 | section_coverage),
+  data           = df_mod,
+  method         = "REML",
+  control        = ctrl
+)
+
+weighted_a <- lme(
+  a              ~ section_coverage + yc,
+  random         = ~ 1 | tank,
+  weights        = varIdent(form = ~ 1 | section_coverage),
+  data           = df_mod,
+  method         = "REML",
+  control        = ctrl
+)
+
+weighted_chroma <- lme(
+  chroma         ~ section_coverage + yc,
+  random         = ~ 1 | tank,
+  weights        = varIdent(form = ~ 1 | section_coverage),
+  data           = df_mod,
+  method         = "REML",
+  control        = ctrl
+)
+
+# Sanity check — should see two residual SDs (one per coverage level)
+
+for (lst in list(list(weighted_b, "b*"), list(weighted_L, "L*"),
+                 list(weighted_a, "a*"), list(weighted_chroma, "chroma"))) {
+  mod  <- lst[[1]]; resp <- lst[[2]]
+  sigs <- coef(mod$modelStruct$varStruct, unconstrained = FALSE, allCoef = TRUE) *
+          sigma(mod)
+  cat(sprintf("\n%s  — residual SD:  single = %.4f  |  double = %.4f\n",
+              resp, sigs["single"], sigs["double"]))
+}
+
+## MODEL COMPARISON: AIC / BIC / LOG-LIK
+
+# lmer models refit with ML (not REML) for a fair comparison
+
+# Refit lmer with ML for fair AIC comparison
+lmer_b_ml  <- update(full_b,      REML = FALSE)
+lmer_L_ml  <- update(full_L,      REML = FALSE)
+lmer_a_ml  <- update(full_a,      REML = FALSE)
+lmer_chr_ml <- update(full_chroma, REML = FALSE)
+
+# Refit lme with ML
+lme_b_ml  <- update(weighted_b,      method = "ML")
+lme_L_ml  <- update(weighted_L,      method = "ML")
+lme_a_ml  <- update(weighted_a,      method = "ML")
+lme_chr_ml <- update(weighted_chroma, method = "ML")
+
+make_comparison_row <- function(resp, homo_ml, weighted_ml) {
+  data.frame(
+    response     = resp,
+    model        = c("Homoscedastic (lmer)", "Weighted varIdent (lme)"),
+    df           = c(attr(logLik(homo_ml),     "df"),
+                     attr(logLik(weighted_ml), "df")),
+    logLik       = round(c(as.numeric(logLik(homo_ml)),
+                           as.numeric(logLik(weighted_ml))), 2),
+    AIC          = round(c(AIC(homo_ml), AIC(weighted_ml)), 2),
+    BIC          = round(c(BIC(homo_ml), BIC(weighted_ml)), 2),
+    delta_AIC    = round(c(0, AIC(weighted_ml) - AIC(homo_ml)), 2)
+  )
+}
+
+comparison_table <- bind_rows(
+  make_comparison_row("b*",     lmer_b_ml,   lme_b_ml),
+  make_comparison_row("L*",     lmer_L_ml,   lme_L_ml),
+  make_comparison_row("a*",     lmer_a_ml,   lme_a_ml),
+  make_comparison_row("chroma", lmer_chr_ml, lme_chr_ml)
+)
+
+print(comparison_table, row.names = FALSE)
+
+## LEVENE TEST COMPARISON — before vs after weighting
+
+# Create comparison function
+levene_compare <- function(resp_label, homo_mod, wtd_mod, data = df_mod) {
+
+  resid_homo <- residuals(homo_mod, type = "response")
+  resid_wtd  <- residuals(wtd_mod,  type = "normalized")
+
+  run_levene <- function(resids, grp_var = "section_coverage") {
+    df_t <- data |> mutate(resid_abs = abs(resids))
+    fit  <- lm(as.formula(paste("resid_abs ~", grp_var)), data = df_t)
+    fst  <- summary(fit)$fstatistic
+    p    <- pf(fst["value"], fst["numdf"], fst["dendf"], lower.tail = FALSE)
+    c(F_val = unname(round(fst["value"], 3)),
+      p_val = unname(round(p, 4)))
+  }
+
+  homo_lev <- run_levene(resid_homo)
+  wtd_lev  <- run_levene(resid_wtd)
+
+  p_vals <- c(homo_lev["p_val"], wtd_lev["p_val"])
+
+  data.frame(
+    response      = resp_label,
+    model         = c("Homoscedastic", "Weighted varIdent"),
+    residual_type = c("raw", "normalised"),
+    Levene_F      = c(homo_lev["F_val"], wtd_lev["F_val"]),
+    Levene_p      = p_vals
+    )
+}
+
+levene_table <- bind_rows(
+  levene_compare("b*",     full_b,      weighted_b),
+  levene_compare("L*",     full_L,      weighted_L),
+  levene_compare("a*",     full_a,      weighted_a),
+  levene_compare("chroma", full_chroma, weighted_chroma)
+)
+
+print(levene_table, row.names = FALSE)
+
+## DIAGNOSTIC PLOTS: weighted model residuals
+
+# Build function
+diag_weighted <- function(wtd_mod, label, resp, data = df_mod) {
+
+  fitted_vals  <- fitted(wtd_mod)
+  resid_norm   <- residuals(wtd_mod, type = "normalized")
+  resid_raw    <- residuals(wtd_mod, type = "response")
+  sc_cov       <- data$section_coverage
+
+  df_p <- data.frame(
+    fitted   = fitted_vals,
+    resid    = resid_norm,
+    sq_abs   = sqrt(abs(resid_norm)),
+    coverage = sc_cov
+  )
+
+  p1 <- ggplot(df_p, aes(x = fitted, y = resid, colour = coverage)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_point(alpha = 0.15, size = 0.7) +
+    geom_smooth(method = "loess", se = FALSE, linewidth = 0.8, span = 0.6) +
+    scale_colour_manual(values = c("single" = "#8DB4C8", "double" = "#2E6E9E"),
+                        name = "Coverage") +
+    labs(x = "Fitted", y = "Normalised residuals",
+         title    = paste0("Residuals vs fitted — ", label, " (weighted)"),
+         subtitle = "Colours = coverage groups; spread should now be equal") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 11, face = "bold"),
+          plot.subtitle = element_text(size = 8,  colour = "grey40"))
+
+  p2 <- ggplot(df_p, aes(x = fitted, y = sq_abs, colour = coverage)) +
+    geom_point(alpha = 0.15, size = 0.7) +
+    geom_smooth(method = "loess", se = FALSE, linewidth = 0.8, span = 0.6) +
+    scale_colour_manual(values = c("single" = "#8DB4C8", "double" = "#2E6E9E"),
+                        name = "Coverage") +
+    labs(x = "Fitted", y = expression(sqrt("|Normalised residuals|")),
+         title    = paste0("Scale-location — ", label, " (weighted)"),
+         subtitle = "Loess per group should now overlap") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 11, face = "bold"),
+          plot.subtitle = element_text(size = 8,  colour = "grey40"))
+
+  p3 <- ggplot(df_p, aes(sample = resid)) +
+    stat_qq(alpha = 0.2, size = 0.7, colour = "#2E6E9E") +
+    stat_qq_line(colour = "#E07B39", linewidth = 0.8) +
+    labs(x = "Theoretical quantiles", y = "Normalised residuals",
+         title    = paste0("QQ — ", label, " (weighted)"),
+         subtitle = "Normality of variance-adjusted residuals") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 11, face = "bold"),
+          plot.subtitle = element_text(size = 8,  colour = "grey40"))
+
+  # Box of raw residuals by coverage — direct visual of variance equalisation
+  p4 <- ggplot(df_p, aes(x = coverage, y = resid, fill = coverage)) +
+    geom_boxplot(outlier.size = 0.8, outlier.alpha = 0.4,
+                 colour = "grey30", linewidth = 0.4, alpha = 0.8) +
+    scale_fill_manual(values = c("single" = "#8DB4C8", "double" = "#2E6E9E"),
+                      guide = "none") +
+    labs(x = "Section coverage", y = "Normalised residuals",
+         title    = paste0("Residuals by coverage — ", label, " (weighted)"),
+         subtitle = "Box widths should now be similar") +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          plot.title    = element_text(size = 11, face = "bold"),
+          plot.subtitle = element_text(size = 8,  colour = "grey40"))
+
+  panel <- (p1 | p2 | p3 | p4) +
+    plot_annotation(
+      title = paste0("Weighted model diagnostics — ", label),
+      theme = theme(plot.title = element_text(size = 13, face = "bold"))
+    )
+
+  print(panel)
+  ggsave(sprintf("plot_diagnostics_weighted_%s.png", resp),
+         panel, width = 16, height = 4, dpi = 150)
+  cat(sprintf("  Saved: plot_diagnostics_weighted_%s.png\n", resp))
+}
+
+# Print diagnostic plots individually
+diag_weighted(weighted_b,      "b*",     "b")
+diag_weighted(weighted_L,      "L*",     "L")
+diag_weighted(weighted_a,      "a*",     "a")
+diag_weighted(weighted_chroma, "chroma", "chroma")
+
+# COEFFICIENT COMPARISON: do fixed-effect estimates shift?
+
+# Extract lme co-efficients for plotting
+extract_lme_coefs <- function(mod, response) {
+  s <- summary(mod)$tTable
+  data.frame(
+    response   = response,
+    term       = rownames(s),
+    estimate   = round(s[, "Value"],    4),
+    se         = round(s[, "Std.Error"],4),
+    t          = round(s[, "t-value"],  3),
+    p          = round(s[, "p-value"],  4),
+    model      = "Weighted varIdent",
+    ci_lo      = round(s[, "Value"] - 1.96 * s[, "Std.Error"], 4),
+    ci_hi      = round(s[, "Value"] + 1.96 * s[, "Std.Error"], 4)
+  ) |> filter(term != "(Intercept)")
+}
+
+extract_lmer_coefs <- function(mod, response) {
+  s <- as.data.frame(coef(summary(mod)))
+  data.frame(
+    response = response,
+    term     = rownames(s),
+    estimate = round(s$Estimate,    4),
+    se       = round(s$`Std. Error`,4),
+    t        = round(s$`t value`,   3),
+    p        = round(s$`Pr(>|t|)`,  4),
+    model    = "Homoscedastic",
+    ci_lo    = round(s$Estimate - 1.96 * s$`Std. Error`, 4),
+    ci_hi    = round(s$Estimate + 1.96 * s$`Std. Error`, 4)
+  ) |> filter(term != "(Intercept)")
+}
+
+coef_compare <- bind_rows(
+  extract_lmer_coefs(full_b,      "b*"),
+  extract_lme_coefs(weighted_b,   "b*"),
+  extract_lmer_coefs(full_L,      "L*"),
+  extract_lme_coefs(weighted_L,   "L*"),
+  extract_lmer_coefs(full_a,      "a*"),
+  extract_lme_coefs(weighted_a,   "a*"),
+  extract_lmer_coefs(full_chroma, "chroma"),
+  extract_lme_coefs(weighted_chroma, "chroma")
+) |>
+  mutate(
+    response   = factor(response, levels = c("b*", "L*", "a*", "chroma")),
+    term_clean = case_when(
+      term == "section_coveragedouble" ~ "Section: double vs single",
+      term == "yc21"                   ~ "YC: 21 vs 22",
+      TRUE                             ~ term
+    )
+  )
+
+print(coef_compare |>
+        dplyr::select(response, term_clean, model, estimate, se, p) |>
+        arrange(response, term_clean, model),
+      row.names = FALSE)
+
+# Forest plot 
+p_coef_compare <- ggplot(
+  coef_compare |> filter(term != "(Intercept)"),
+  aes(x     = estimate,
+      y     = term_clean,
+      colour = model,
+      shape  = model)
+) +
+  geom_vline(xintercept = 0, linetype = "dashed",
+             colour = "grey50", linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = ci_lo, xmax = ci_hi),
+                 height = 0.25, linewidth = 0.6, alpha = 0.8,
+                 position = position_dodge(0.55)) +
+  geom_point(size = 2.8,
+             position = position_dodge(0.55)) +
+  facet_wrap(~response, scales = "free_x", nrow = 1) +
+  scale_colour_manual(values = c("Homoscedastic"     = "#AED6F1",
+                                 "Weighted varIdent" = "#1F618D"),
+                      name = NULL) +
+  scale_shape_manual(values  = c("Homoscedastic"     = 1,
+                                 "Weighted varIdent" = 16),
+                     name = NULL) +
+  labs(
+    x        = "Estimate (95% CI)",
+    y        = NULL,
+    title    = "Fixed effects: homoscedastic vs weighted",
+    subtitle = "Open = homoscedastic · Filled = weighted varIdent\nIf CIs overlap substantially, conclusions are robust"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.y = element_line(linewidth = 0.2, colour = "grey90"),
+    strip.text         = element_text(size = 11, face = "bold"),
+    plot.title         = element_text(size = 13, face = "bold"),
+    plot.subtitle      = element_text(size = 9,  colour = "grey40"),
+    legend.position    = "bottom",
+    axis.text.y        = element_text(size = 10)
+  )
+
+print(p_coef_compare)
+ggsave("plot_coef_comparison_weighted.png",
+       p_coef_compare, width = 13, height = 5, dpi = 150)
+
